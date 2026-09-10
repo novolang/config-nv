@@ -1,0 +1,145 @@
+// cfgadapt.nv — the three format trees, turned into the one tree the
+// merge algebra works on.
+//
+// THESE FUNCTIONS PERFORM NOTHING.  Every row here is empty: an
+// adapter is a total function from one enum to another.  They live in
+// the `host` half because this is where the two parsers are — putting
+// them in `config-core-nv` would make that package depend on toml-nv,
+// yaml-nv and calendar-nv behind them, so a program that only wanted
+// to merge two tables it built in code would resolve three packages it
+// never calls.  `config-nv` needs the parsers anyway.
+//
+// WHAT EACH FORMAT LOSES ON THE WAY IN, stated once here because a
+// reader chasing a value that changed shape needs one place to look:
+//
+//   TOML   an offset date-time, a local date-time, a local date and a
+//          local time all become `CfgStr` in RFC 3339 spelling.  The
+//          merge never compares two instants, and an arm that carried
+//          a civil date would put calendar-nv in the closure of a
+//          package whose subject is precedence.
+//   YAML   a mapping key that is not a scalar is REFUSED, not
+//          flattened — a dotted path cannot name a sequence, so a
+//          document that used one would have keys no getter could
+//          reach.  A non-string scalar key is rendered with the
+//          document's own spelling: `1:` becomes the key `"1"`.
+//          Anchors and aliases are already resolved by yaml-nv;
+//          nothing here sees them.
+//   JSON   nothing is lost, and everything is discovered.  See below.
+//
+// THE JSON ADAPTER IS THE AWKWARD ONE.  `std.json`'s value is
+// `JsonValueH`, an opaque handle whose accessors return `?Any`; there
+// is no arm to match on.  So `from_json` has to DISCOVER the shape by
+// trying, in this order: `json.keys` for an object, `json.to_list` for
+// an array, then `to_bool`, `to_int`, `to_float`, `to_str`.  The
+// order matters — `to_int` before `to_float`, because a JSON number
+// that is a whole number should reach `get_int` — and a value nothing
+// answers for becomes `CfgNull`, because JSON's null is the only value
+// with no accessor.  It is written down because it is a rule nobody
+// can read off the standard library page.
+
+use std.json
+
+// A `TomlValue` as a `ConfigValue`.
+//
+// Total: every TOML value has a reading, with the date-times going to
+// strings as the header explains.
+//
+// ```novo
+// use cfgadapt
+// use cfgvalue
+//
+// fn shape(v: TomlValue) -> Str
+//     cfgvalue.kind_name(cfgvalue.kind_of(cfgadapt.from_toml(v)))
+// ```
+pub fn from_toml(v: TomlValue) -> ConfigValue
+    todo("config-nv.cfgadapt.from_toml")
+
+// A yaml-nv document as a `ConfigValue`, or the reason it has no
+// reading.
+//
+// The one refusal is a mapping key that is a collection.  It is a
+// refusal and not a flattening because the alternative is a document
+// whose keys exist and cannot be looked up, which is worse than a
+// document that does not load.
+//
+// ```novo
+// use cfgadapt
+//
+// fn shape(v: YamlValue) -> Str
+//     match cfgadapt.from_yaml(v)
+//         Ok(_)  => "adapted"
+//         Err(_) => "a collection was used as a key"
+// ```
+pub fn from_yaml(v: YamlValue) -> Result<ConfigValue, ConfigReadFault>
+    todo("config-nv.cfgadapt.from_yaml")
+
+// A `std.json` value as a `ConfigValue`.
+//
+// Total, by the discovery order in this module's header: object,
+// array, bool, int, float, string, and `CfgNull` for anything that
+// answers to none of them.
+//
+// ```novo
+// use cfgadapt
+// use cfgvalue
+// use std.json
+//
+// fn shape(text: Str) -> Str
+//     match json.parse(text)
+//         Some(v) => cfgvalue.kind_name(cfgvalue.kind_of(cfgadapt.from_json(v)))
+//         None    => "not json"
+// ```
+pub fn from_json(v: JsonValueH) -> ConfigValue
+    todo("config-nv.cfgadapt.from_json")
+
+// Which format a path's extension names.
+//
+// `.toml`, `.yaml`, `.yml`, `.json` — case-insensitively, because a
+// file called `Config.TOML` is the same file.  `None` for anything
+// else, including a path with no extension at all, and the caller
+// turns that into `ReadUnknownExtension` with the path in it.
+//
+// Separate from the reader so that a program can decide what to do
+// about an unrecognised file — skip it, or refuse the whole start —
+// before it opens anything.
+//
+// ```novo
+// use cfgadapt
+//
+// fn main() [io]
+//     match cfgadapt.format_of("/etc/app.toml")
+//         Some(f) => println(cfgadapt.format_name(f))
+//         None    => println("no format for that name")
+// ```
+pub fn format_of(path: Str) -> ?ConfigFormat
+    todo("config-nv.cfgadapt.format_of")
+
+// The format's name: `"toml"`, `"yaml"`, `"json"`.
+//
+// ```novo
+// use cfgadapt
+//
+// fn main() [io]
+//     println(cfgadapt.format_name(FormatToml))
+// ```
+pub fn format_name(f: ConfigFormat) -> Str
+    todo("config-nv.cfgadapt.format_name")
+
+// Parse text in a named format straight into a `ConfigValue`.
+//
+// The whole of `cfgread.file_layer` minus the file, so a program that
+// already has the bytes — from a network fetch, from a resource
+// compiled into the binary — gets the same reading with no `[fs]`.
+// **No effects**: this is three parsers and an adapter.
+//
+// ```novo
+// use cfgadapt
+// use cfgvalue
+//
+// fn parse_toml(text: Str) -> Str
+//     match cfgadapt.parse_text(FormatToml, text, "<memory>")
+//         Ok(v)  => cfgvalue.kind_name(cfgvalue.kind_of(v))
+//         Err(_) => "did not parse"
+// ```
+pub fn parse_text(f: ConfigFormat, text: Str, origin: Str) -> Result<ConfigValue, ConfigReadFault>
+    todo("config-nv.cfgadapt.parse_text")

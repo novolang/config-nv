@@ -1,0 +1,136 @@
+// cfgenviron.nv — the process environment, behind a prefix.
+//
+// THE ROW IS `[io]`, AND THE CALL IS `env.get`.  SPEC § 5.1 puts the
+// environment under `[io]` along with pipes and processes, so reading
+// one variable costs `[io]` and nothing else: no `[fs]`, because
+// nothing here opens a file, and no `[time]`.  The standard library
+// function is `env.get(name: Str) -> ?Str`, whose own row is `[io]`,
+// and this module is that call in a loop.
+//
+// **THE STANDARD LIBRARY CANNOT ENUMERATE THE ENVIRONMENT.**  There is
+// `env.get(name)` and `process.env(name)`, both by name, and there is
+// no `env.vars()`.  So this package cannot scan for everything
+// starting `APP_`, the way Rust's `config` and Python's dynaconf do,
+// and the shape of the API is different because of it:
+//
+//   a program DECLARES the paths it understands
+//   `cfgenvkeys.names_for` turns those into environment names
+//   this module looks those names up, one at a time
+//
+// That is a real constraint and it has one real consequence: a
+// variable a program did not declare is invisible, where a scanning
+// library would have picked it up and put it in the tree.  It also has
+// one real benefit, which is why the shape is not being apologised
+// for: `declared_pairs` cannot be surprised by a variable somebody
+// exported in a shell profile, and a program's configuration surface
+// is the list it wrote down.
+//
+// `prefixed_pairs` exists for the day the enumeration does: it takes
+// the candidate names explicitly today, and its signature does not
+// change if the standard library grows a lister.
+
+use std.env
+
+// The `(name, value)` pairs for a list of names, skipping the ones
+// that are unset.
+//
+// The one primitive.  Everything else in this module is this plus a
+// mapping, and it is `pub` because a program that wants the pairs to
+// log them, or to hand to `cfgenvkeys.layer_from` with its own rule,
+// should not have to build a layer to get them.
+//
+// ```novo
+// use cfgenviron
+//
+// fn seen() -> [(Str, Str)] [io]
+//     cfgenviron.pairs_for(["APP_SERVER__PORT", "APP_DEBUG"])
+// ```
+pub fn pairs_for(names: [Str]) -> [(Str, Str)] [io]
+    todo("config-nv.cfgenviron.pairs_for")
+
+// The pairs for the names a rule maps a program's paths to.
+//
+// `cfgenvkeys.names_for` and `pairs_for` in one call, which is the
+// shape a program wants: it has the settings it understands, and it
+// wants what the environment says about them.
+//
+// ```novo
+// use cfgenviron
+// use cfgenvkeys
+//
+// fn seen() -> [(Str, Str)] [io]
+//     cfgenviron.declared_pairs(cfgenvkeys.rule("APP_"), ["server.port", "debug"])
+// ```
+pub fn declared_pairs(r: EnvKeyRule, paths: [Str]) -> [(Str, Str)] [io]
+    todo("config-nv.cfgenviron.declared_pairs")
+
+// The pairs for a list of candidate names that carry the rule's
+// prefix.
+//
+// The same as `pairs_for` with the names filtered by the prefix
+// first, so that a caller assembling candidates from several places
+// does not have to filter them itself.
+//
+// ```novo
+// use cfgenviron
+// use cfgenvkeys
+//
+// fn seen() -> [(Str, Str)] [io]
+//     cfgenviron.prefixed_pairs(cfgenvkeys.rule("APP_"), ["APP_DEBUG", "PATH"])
+// ```
+pub fn prefixed_pairs(r: EnvKeyRule, candidates: [Str]) -> [(Str, Str)] [io]
+    todo("config-nv.cfgenviron.prefixed_pairs")
+
+// **A layer from the environment**: the paths a program declares,
+// looked up under a rule.
+//
+// The call most programs make.  `name` is what a provenance answer
+// will say — `"APP_ environment"` reads better than `"env"`, because a
+// program with two prefixes has two environment layers.
+//
+// ```novo
+// use cfgenviron
+// use cfgenvkeys
+//
+// fn layer() -> ConfigLayer [io]
+//     cfgenviron.env_layer(cfgenvkeys.rule("APP_"), ["server.port", "debug"],
+//                          "APP_ environment", 30)
+// ```
+pub fn env_layer(r: EnvKeyRule, paths: [Str], name: Str, rank: Int) -> ConfigLayer [io]
+    todo("config-nv.cfgenviron.env_layer")
+
+// A layer from a list of candidate NAMES rather than paths.
+//
+// For a program whose environment variables do not correspond to its
+// configuration paths one for one — a legacy `DATABASE_URL` beside a
+// prefixed set — where the caller supplies the names and the rule maps
+// them back.
+//
+// ```novo
+// use cfgenviron
+// use cfgenvkeys
+//
+// fn layer() -> ConfigLayer [io]
+//     cfgenviron.env_layer_of(cfgenvkeys.rule("APP_"), ["APP_SERVER__PORT"],
+//                             "APP_ environment", 30)
+// ```
+pub fn env_layer_of(r: EnvKeyRule, names: [Str], name: Str, rank: Int) -> ConfigLayer [io]
+    todo("config-nv.cfgenviron.env_layer_of")
+
+// One variable, as the standard library gives it.
+//
+// Here so that a program does not have to `use std.env` alongside this
+// module for the one lookup that is not part of a layer — a
+// `NO_COLOR`, an `APP_CONFIG` naming the file to read before any
+// layer exists.
+//
+// ```novo
+// use cfgenviron
+//
+// fn main() [io]
+//     match cfgenviron.variable("APP_CONFIG")
+//         Some(p) => println(p)
+//         None    => println("not set")
+// ```
+pub fn variable(name: Str) -> ?Str [io]
+    todo("config-nv.cfgenviron.variable")

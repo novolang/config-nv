@@ -1,0 +1,149 @@
+// cfgsource.nv — what a format is, and why a source did not load.
+//
+// ONE ERROR TYPE FOR THE WHOLE HOST HALF.  A program starting up wants
+// one `match` over "why did my configuration not come together", and
+// splitting that across a file error, a parse error and a dotenv error
+// would make three.  `ReadValueFault` is the arm that carries
+// config-core-nv's own refusal across, so a caller that wants the
+// layer behind a wrong type unwraps one level and asks `cfgfault`.
+//
+// A FAULT IS A VALUE.  Nothing here is a formatted sentence and
+// nothing here prints: every arm carries the path, and the parse arm
+// carries the line and column the parser gave, so a program can render
+// it in its own voice — or point an editor at it.
+
+// Which parser reads a file.
+//
+// ```novo
+// use cfgadapt
+//
+// fn main() [io]
+//     println(cfgadapt.format_name(FormatYaml))
+// ```
+pub enum ConfigFormat
+    FormatToml
+    FormatYaml
+    FormatJson
+
+// Why a source did not become a layer.
+//
+// ```novo
+// use cfgsource
+//
+// fn main() [io]
+//     println(cfgsource.read_fault_path(ReadNoSuchFile("/etc/app.toml")))
+// ```
+pub enum ConfigReadFault
+    // The path does not exist.  A distinct arm from `ReadDenied`
+    // because a program with a list of candidate files treats a
+    // missing one as ordinary and an unreadable one as a problem.
+    ReadNoSuchFile(path: Str)
+    // The path exists and the process may not read it.
+    ReadDenied(path: Str)
+    // The path's extension names no format this package parses.
+    ReadUnknownExtension(path: Str, ext: Str)
+    // The parser refused.  `line` and `col` are 1-based and are the
+    // parser's own numbers; `why` is the parser's own reason, carried
+    // rather than rewritten, because a TOML error that says
+    // "duplicate key" should keep saying that.
+    ReadParseFailed(path: Str, line: Int, col: Int, why: Str)
+    // The bytes are not text this toolchain can read.
+    ReadNotText(path: Str)
+    // A `.env` line does not fit the dotenv grammar.  `line` is
+    // 1-based; `why` names which rule — an unterminated quote, a name
+    // that is not an identifier, a line with no `=` in it.
+    ReadBadEnvLine(path: Str, line: Int, why: Str)
+    // The document parsed and its shape has no reading — a YAML
+    // mapping keyed by a sequence, a root that is not a table.
+    ReadUnusableShape(path: Str, why: Str)
+    // config-core-nv refused something, and this carries its reason
+    // across unrewritten so that the layer it blames survives.
+    ReadValueFault(fault: ConfigFault)
+
+// The reason, as one line of text.
+//
+// The `Error` trait's method, which is what `Result<_,
+// ConfigReadFault>` requires and what a `!` propagation renders when
+// nothing catches it.  It is the last resort, not the interface: a
+// program that wants to point at a line reads the arm's fields.
+impl Error for ConfigReadFault
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("config-nv.ConfigReadFault.message")
+
+// The path a fault is about.
+//
+// `""` for a `ReadValueFault`, whose subject is a key rather than a
+// file; `cfgfault.fault_path` on the inner value is the question to
+// ask there.
+//
+// ```novo
+// use cfgsource
+//
+// fn main() [io]
+//     println(cfgsource.read_fault_path(ReadDenied("/etc/shadow")))
+// ```
+pub fn read_fault_path(f: ConfigReadFault) -> Str
+    todo("config-nv.cfgsource.read_fault_path")
+
+// A short name for which refusal this is, for a program that groups or
+// counts them.
+//
+// `"no such file"`, `"denied"`, `"unknown extension"`, `"parse
+// failed"`, `"not text"`, `"bad env line"`, `"unusable shape"`,
+// `"value"` — stable across releases, because a program's own error
+// text quotes them.
+//
+// ```novo
+// use cfgsource
+//
+// fn main() [io]
+//     println(cfgsource.read_fault_kind(ReadNoSuchFile("/etc/app.toml")))
+// ```
+pub fn read_fault_kind(f: ConfigReadFault) -> Str
+    todo("config-nv.cfgsource.read_fault_kind")
+
+// The line a fault is about, or `-1` when it is not about a line.
+//
+// ```novo
+// use cfgsource
+//
+// fn main() [io]
+//     println("${cfgsource.read_fault_line(ReadDenied("/etc/shadow"))}")
+// ```
+pub fn read_fault_line(f: ConfigReadFault) -> Int
+    todo("config-nv.cfgsource.read_fault_line")
+
+// The config-core-nv refusal inside a `ReadValueFault`, if that is
+// what this is.
+//
+// The one place the two error types meet, and it is a projection
+// rather than a conversion so that nothing is rewritten on the way.
+//
+// ```novo
+// use cfgsource
+// use cfgfault
+//
+// fn main() [io]
+//     match cfgsource.value_fault(ReadNotText("/etc/app.toml"))
+//         Some(v) => println(cfgfault.fault_kind(v))
+//         None    => println("that fault is about a file")
+// ```
+pub fn value_fault(f: ConfigReadFault) -> ?ConfigFault
+    todo("config-nv.cfgsource.value_fault")
+
+// Whether a fault means "this source was simply not there".
+//
+// True for `ReadNoSuchFile` alone.  The call a program makes when it
+// has four candidate paths and expects most of them to be absent —
+// which is every program with a `/etc`, a `~` and a `./` configuration
+// file.
+//
+// ```novo
+// use cfgsource
+//
+// fn main() [io]
+//     println("${cfgsource.is_absent(ReadNoSuchFile("/etc/app.toml"))}")
+// ```
+pub fn is_absent(f: ConfigReadFault) -> Bool
+    todo("config-nv.cfgsource.is_absent")

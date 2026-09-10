@@ -1,0 +1,127 @@
+// cfgdotenv.nv — the `.env` grammar, and a layer from a `.env` file.
+//
+// THE GRAMMAR, which is dotenvy's and python-dotenv's where they
+// agree, written down because they disagree in three places and this
+// package has to pick:
+//
+//   NAME=value                     the whole of it
+//   export NAME=value              `export ` is accepted and ignored
+//   NAME='value'                   single quotes: no escapes, no
+//                                  interpolation, newline permitted
+//   NAME="value"                   double quotes: `\n \r \t \\ \" \$`
+//                                  are escapes, newline permitted
+//   NAME=                          the empty string, not an unset
+//   # comment                      to end of line, outside quotes
+//   <blank>                        skipped
+//
+// THE THREE DECISIONS:
+//
+//   1. **No interpolation.**  `A=$B` is the two characters, not B's
+//      value.  Both reference implementations do interpolate, and it
+//      is left out because the resolution order across a `.env` file,
+//      the process environment and a config file has three plausible
+//      readings and no obvious one — and a program that silently gets
+//      the wrong one has a secret in the wrong place.  It is a
+//      candidate for 0.2 with the order written down first.
+//   2. **The file does not touch the process environment.**  Nothing
+//      here calls `process.env_set`.  A `.env` becomes a LAYER, and
+//      the layer is merged like any other — so a program can see, in a
+//      provenance answer, that a value came from `.env` and not from
+//      the environment it was started with.  This is the opposite of
+//      what most dotenv libraries do and it is the reason this one is
+//      worth having.
+//   3. **A duplicate name: the last wins**, matching what a shell does
+//      when a variable is exported twice, and matching
+//      `cfgenvkeys.layer_from`'s own rule so that a `.env` and the real
+//      environment behave the same way.
+//
+// THE ROWS.  `parse_dotenv` is text in, pairs out, and declares
+// NOTHING.  `dotenv_layer` reads a file, so it is `[fs]` — and not
+// `[io]`, because a `.env` is a file and this module never reads the
+// process environment.  A program that wants both stacks two layers.
+
+// The pairs a `.env` text holds, in file order.
+//
+// **No effects**: this is the grammar and nothing else, which is what
+// makes it testable against a fixture string with no file on disk.
+// `origin` names the source in any fault it raises — a path, or
+// something like `"<stdin>"`.
+//
+// ```novo
+// use cfgdotenv
+// use std.list
+//
+// fn count(text: Str) -> Int
+//     match cfgdotenv.parse_dotenv(text, "<memory>")
+//         Ok(ps) => list.len(ps)
+//         Err(_) => 0 - 1
+// ```
+pub fn parse_dotenv(text: Str, origin: Str) -> Result<[(Str, Str)], ConfigReadFault>
+    todo("config-nv.cfgdotenv.parse_dotenv")
+
+// **A layer from a `.env` file.**
+//
+// The pairs go through `cfgenvkeys.layer_from` with the rule given, so
+// a `.env` written for a prefix maps to paths the same way the real
+// environment does — `APP_SERVER__PORT=8080` in a file and in a shell
+// are the same setting, which is the property that makes a `.env`
+// useful for development.
+//
+// ```novo
+// use cfgdotenv
+// use cfgenvkeys
+//
+// fn layer() -> Result<ConfigLayer, ConfigReadFault> [fs]
+//     cfgdotenv.dotenv_layer(cfgenvkeys.rule("APP_"), ".env", ".env", 20)
+// ```
+pub fn dotenv_layer(r: EnvKeyRule, path: Str, name: Str,
+                    rank: Int) -> Result<ConfigLayer, ConfigReadFault> [fs]
+    todo("config-nv.cfgdotenv.dotenv_layer")
+
+// The same, with a file that is not there reported as `None`.
+//
+// A `.env` is absent in production far more often than it is present,
+// so this is the call most programs make.
+//
+// ```novo
+// use cfgdotenv
+// use cfgenvkeys
+//
+// fn layer() -> Result<?ConfigLayer, ConfigReadFault> [fs]
+//     cfgdotenv.optional_dotenv_layer(cfgenvkeys.rule("APP_"), ".env", ".env", 20)
+// ```
+pub fn optional_dotenv_layer(r: EnvKeyRule, path: Str, name: Str,
+                             rank: Int) -> Result<?ConfigLayer, ConfigReadFault> [fs]
+    todo("config-nv.cfgdotenv.optional_dotenv_layer")
+
+// The pairs a `.env` file holds, without building a layer.
+//
+// For a program that wants the names and values themselves — to hand
+// to a subprocess it is about to spawn, which is the one thing a
+// `.env` is for that a layer is not.
+//
+// ```novo
+// use cfgdotenv
+//
+// fn pairs() -> Result<[(Str, Str)], ConfigReadFault> [fs]
+//     cfgdotenv.read_dotenv(".env")
+// ```
+pub fn read_dotenv(path: Str) -> Result<[(Str, Str)], ConfigReadFault> [fs]
+    todo("config-nv.cfgdotenv.read_dotenv")
+
+// Render pairs back as `.env` text.
+//
+// Quotes a value that needs it and escapes what the double-quoted form
+// escapes, so that `parse_dotenv(render_dotenv(ps), o)` is `ps` for
+// every list of pairs.  **No effects** — it returns the text; writing
+// it somewhere is the caller's, and a library does not decide that
+// something appears on a console.
+//
+// ```novo
+// use cfgdotenv
+//
+// fn main() [io]
+//     println(cfgdotenv.render_dotenv([("APP_DEBUG", "true")]))
+// ```
+pub fn render_dotenv(pairs: [(Str, Str)]) -> Str
+    todo("config-nv.cfgdotenv.render_dotenv")

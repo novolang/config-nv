@@ -1,0 +1,61 @@
+[package]
+name        = "config-nv"
+version     = "0.0.1"
+description = "The half of a configuration library that touches the machine: files read by path and dispatched on extension to toml-nv, yaml-nv or std.json, the process environment behind a prefix, a .env file with the dotenv grammar, and command-line overrides — each producing one config-core-nv layer, stacked in a declared order."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `host`, and the rows are the disclosure.  They are not all the same:
+# reading a file is `[fs]`, reading the process environment is `[io]`
+# because SPEC § 5.1 puts the environment there, and the format
+# adapters and the override layer declare NOTHING — they are here
+# because this is where the parsers are, not because they perform
+# anything.  A caller in a sandbox that grants one label and not the
+# other can see which calls they still have before they write them.
+layer       = "host"
+
+category    = "tooling"
+
+tags        = ["config", "configuration", "dotenv", "env", "toml", "yaml", "layered"]
+repository  = "https://github.com/novolang/config-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Reading configuration off the machine"
+
+[dependencies]
+# The `core` half of the split, and the direction the layer order
+# allows: a `host` package may depend on a `core` one, which is what
+# keeps the merge algebra testable with no file in the room.
+#
+# A PATH while the two are developed together.  The coordinator
+# converts this to `config-core-nv = "^0.0.1"` before publish — a path
+# dependency is refused by `novo pkg publish`, `--dry-run` included,
+# because the tarball would carry the path and send every consumer to a
+# directory that is not on their machine.
+config-core-nv = "^0.0.1"
+
+# The two format parsers, from the registry.  BOTH ARE INTERFACES
+# themselves — 0.0.x, `stability = "draft"`, every body a `todo()` — so
+# a program that assembles this closure today builds and panics on the
+# first parse.  That is the interfaces-first milestone working as
+# designed, and it is written here rather than only in the README so a
+# reader of the manifest sees it.
+#
+# Under the caret rule a `0.0.x` version has no compatible neighbours:
+# `^0.0.3` means exactly 0.0.3, and a republished parser needs this
+# line edited.
+toml-nv     = "^0.0.3"
+yaml-nv     = "^0.0.2"
+
+# JSON is `std.json` and costs no dependency at all.

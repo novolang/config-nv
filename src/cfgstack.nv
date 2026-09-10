@@ -1,0 +1,264 @@
+// cfgstack.nv — the builder: sources in a declared order, one merged
+// tree out.
+//
+// A STACK IS A VALUE AND EVERY CALL RETURNS A NEW ONE.  There is no
+// mutation here — `[mutate]` would be an honest row for a host package
+// and it is not needed, because a builder that returns itself reads
+// the same and can be held, passed and reused.  The rank is assigned
+// as each source is pushed, so **the order of the calls IS the
+// precedence** and a program's start-up code is the documentation of
+// its own layering.
+//
+// THE ORDER MOST PROGRAMS WANT, and the one `standard` builds:
+//
+//   defaults          the values compiled into the program      rank 0
+//   files             /etc, then ~, then ./                     10, 11, …
+//   .env              the development file                      20
+//   environment       the real environment, behind a prefix     30
+//   overrides         the command line                          40
+//
+// Later wins, so a flag beats the environment beats `.env` beats a
+// file beats a default — which is what a person expects and what
+// twelve-factor asks for.  `standard` is a convenience over the same
+// calls a program could make itself, and its rows are the union of
+// theirs: `[fs, io]`.
+//
+// THE ROWS ARE PER PUSH, not per builder.  `with_layer` and `build`
+// declare nothing at all — a stack that was assembled from values
+// costs nothing to merge — and only the pushes that read something
+// carry a row.  That is what lets a test build a whole configuration
+// from fixtures inside a pure function.
+
+// Sources in the order they were declared, with the ranks assigned.
+//
+// ```novo
+// use cfgstack
+//
+// fn main() [io]
+//     println("${cfgstack.depth(cfgstack.empty())}")
+// ```
+pub struct ConfigStack
+    // The layers pushed so far, in push order.
+    layers: [ConfigLayer]
+    // The rank the next push will use.  Starts at 0 and rises by 10,
+    // so a caller can slot a layer between two others by hand.
+    next_rank: Int
+
+// An empty stack.
+//
+// ```novo
+// use cfgstack
+//
+// fn main() [io]
+//     println("${cfgstack.depth(cfgstack.empty())}")
+// ```
+pub fn empty() -> ConfigStack
+    todo("config-nv.cfgstack.empty")
+
+// How many layers a stack holds.
+//
+// ```novo
+// use cfgstack
+//
+// fn main() [io]
+//     println("${cfgstack.depth(cfgstack.empty())}")
+// ```
+pub fn depth(s: ConfigStack) -> Int
+    todo("config-nv.cfgstack.depth")
+
+// Push a layer a caller built themselves, at the stack's next rank.
+//
+// **No effects.**  The escape hatch: a program with a source this
+// package does not know about — a database row, a key-value store —
+// builds a `ConfigLayer` and pushes it here, and it merges like any
+// other.
+//
+// ```novo
+// use cfgstack
+// use cfglayer
+// use cfgvalue
+//
+// fn main() [io]
+//     let l = cfglayer.layer("built in", 0, cfgvalue.empty_table())
+//     println("${cfgstack.depth(cfgstack.with_layer(cfgstack.empty(), l))}")
+// ```
+pub fn with_layer(s: ConfigStack, l: ConfigLayer) -> ConfigStack
+    todo("config-nv.cfgstack.with_layer")
+
+// Push the defaults a program compiled into itself.
+//
+// **No effects.**  Named rather than left to `with_layer` because it
+// is the bottom of every stack and a start-up sequence reads better
+// when the bottom says what it is.
+//
+// ```novo
+// use cfgstack
+// use cfgvalue
+//
+// fn main() [io]
+//     let s = cfgstack.with_defaults(cfgstack.empty(), cfgvalue.empty_table())
+//     println("${cfgstack.depth(s)}")
+// ```
+pub fn with_defaults(s: ConfigStack, root: ConfigValue) -> ConfigStack
+    todo("config-nv.cfgstack.with_defaults")
+
+// Push a file, refusing if it is not there.
+//
+// ```novo
+// use cfgstack
+//
+// fn build() -> Result<ConfigStack, ConfigReadFault> [fs]
+//     cfgstack.with_file(cfgstack.empty(), "/etc/app.toml")
+// ```
+pub fn with_file(s: ConfigStack, path: Str) -> Result<ConfigStack, ConfigReadFault> [fs]
+    todo("config-nv.cfgstack.with_file")
+
+// Push a file if it is there, and carry on if it is not.
+//
+// A file that exists and will not parse still refuses — see
+// `cfgread.optional_layer` for why that asymmetry is deliberate.
+//
+// ```novo
+// use cfgstack
+//
+// fn build() -> Result<ConfigStack, ConfigReadFault> [fs]
+//     cfgstack.with_optional_file(cfgstack.empty(), "~/.config/app.toml")
+// ```
+pub fn with_optional_file(s: ConfigStack, path: Str) -> Result<ConfigStack, ConfigReadFault> [fs]
+    todo("config-nv.cfgstack.with_optional_file")
+
+// Push every file in a list that is there, in list order.
+//
+// ```novo
+// use cfgstack
+//
+// fn build() -> Result<ConfigStack, ConfigReadFault> [fs]
+//     cfgstack.with_files(cfgstack.empty(), ["/etc/app.toml", "app.toml"])
+// ```
+pub fn with_files(s: ConfigStack, paths: [Str]) -> Result<ConfigStack, ConfigReadFault> [fs]
+    todo("config-nv.cfgstack.with_files")
+
+// Push a `.env` file if it is there.
+//
+// ```novo
+// use cfgstack
+// use cfgenvkeys
+//
+// fn build() -> Result<ConfigStack, ConfigReadFault> [fs]
+//     cfgstack.with_dotenv(cfgstack.empty(), cfgenvkeys.rule("APP_"), ".env")
+// ```
+pub fn with_dotenv(s: ConfigStack, r: EnvKeyRule,
+                   path: Str) -> Result<ConfigStack, ConfigReadFault> [fs]
+    todo("config-nv.cfgstack.with_dotenv")
+
+// Push the process environment, for the paths a program declares.
+//
+// `[io]` and nothing else: the environment is `[io]` (SPEC § 5.1) and
+// no file is opened.  `paths` is the list of settings the program
+// understands — see `cfgenviron`'s header for why this package asks
+// for them instead of scanning.
+//
+// ```novo
+// use cfgstack
+// use cfgenvkeys
+//
+// fn build() -> ConfigStack [io]
+//     cfgstack.with_environment(cfgstack.empty(), cfgenvkeys.rule("APP_"),
+//                               ["server.port", "debug"])
+// ```
+pub fn with_environment(s: ConfigStack, r: EnvKeyRule, paths: [Str]) -> ConfigStack [io]
+    todo("config-nv.cfgstack.with_environment")
+
+// Push command-line overrides, as `(path, value)` pairs.
+//
+// **No effects.**  The pairs come from whatever parsed the command
+// line — `std.cli`, or a program's own loop — and the paths are used
+// as written, with no lowercasing and no re-separating, because the
+// person typing `--set server.port=8080` spelled a path.
+//
+// A pair whose path does not parse is skipped and reported by
+// `bad_overrides`; refusing the whole stack for one bad flag would
+// lose the four good ones.
+//
+// ```novo
+// use cfgstack
+//
+// fn main() [io]
+//     let s = cfgstack.with_overrides(cfgstack.empty(), [("server.port", "8080")])
+//     println("${cfgstack.depth(s)}")
+// ```
+pub fn with_overrides(s: ConfigStack, pairs: [(Str, Str)]) -> ConfigStack
+    todo("config-nv.cfgstack.with_overrides")
+
+// The overrides `with_overrides` could not use, with the fault for
+// each.
+//
+// ```novo
+// use cfgstack
+// use std.list
+//
+// fn main() [io]
+//     println("${list.len(cfgstack.bad_overrides([("a..b", "1")]))}")
+// ```
+pub fn bad_overrides(pairs: [(Str, Str)]) -> [ConfigFault]
+    todo("config-nv.cfgstack.bad_overrides")
+
+// **Merge the stack.**
+//
+// **No effects.**  Everything was read on the way in; this is
+// `cfgmerge.merge_all` over the layers in push order, and a program
+// can call it as often as it likes.
+//
+// ```novo
+// use cfgstack
+// use cfglookup
+//
+// fn port(s: ConfigStack) -> Result<Int, ConfigFault>
+//     cfglookup.get_int(cfgstack.build(s), "server.port")
+// ```
+pub fn build(s: ConfigStack) -> MergedConfig
+    todo("config-nv.cfgstack.build")
+
+// The layers a stack holds, in push order.
+//
+// What a `--explain-config` prints: the sources, in the order they
+// were declared, with the ranks that decide who wins.
+//
+// ```novo
+// use cfgstack
+// use std.list
+//
+// fn main() [io]
+//     println("${list.len(cfgstack.sources(cfgstack.empty()))}")
+// ```
+pub fn sources(s: ConfigStack) -> [ConfigLayer]
+    todo("config-nv.cfgstack.sources")
+
+// **The whole start-up sequence in one call**, in the order the
+// module header describes.
+//
+// `defaults`, then the files that exist, then `.env`, then the
+// environment for `paths`, then `overrides`. `[fs, io]` — the union of
+// what its parts declare, and no more.
+//
+// A program that wants a different order builds it push by push;
+// this is the one that is right often enough to be worth naming, and
+// having it named is what stops five programs inventing five
+// precedences.
+//
+// ```novo
+// use cfgstack
+// use cfgenvkeys
+// use cfgvalue
+//
+// fn load() -> Result<MergedConfig, ConfigReadFault> [fs, io]
+//     let s = cfgstack.standard(cfgvalue.empty_table(),
+//                               ["/etc/app.toml", "app.toml"],
+//                               cfgenvkeys.rule("APP_"),
+//                               ["server.port", "debug"],
+//                               [])!
+//     Ok(cfgstack.build(s))
+// ```
+pub fn standard(defaults: ConfigValue, paths: [Str], r: EnvKeyRule, declared: [Str],
+                overrides: [(Str, Str)]) -> Result<ConfigStack, ConfigReadFault> [fs, io]
+    todo("config-nv.cfgstack.standard")

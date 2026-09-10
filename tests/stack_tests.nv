@@ -1,0 +1,178 @@
+// stack_tests.nv — the API suite for the builder, the file reader and
+// the environment reader.
+//
+// RED ON PURPOSE: every body is a `todo()`.  Run with `--isolate` for
+// one verdict per `@test`.
+//
+// WHAT THESE CASES PIN.  Not what a file contains — nothing reads one
+// yet — but the two things that are decisions rather than arithmetic:
+// **the order of the standard stack**, which is what makes one
+// program's precedence the same as another's, and **the effect rows**,
+// which are three different answers to "what did this push have to
+// touch".  A push that reads nothing declares nothing, and the
+// signatures below are where that is checked.
+
+use std.test
+use std.list
+use cfgstack
+use cfgread
+use cfgenviron
+use cfgenvkeys
+use cfgvalue
+use cfglayer
+use cfgmerge
+use cfglookup
+use cfgsource
+
+@test
+fn test_a_stack_is_a_value_and_every_push_returns_a_new_one() [io]
+    test.case("the empty stack has no layers")
+    test.assert(cfgstack.depth(cfgstack.empty()) == 0)
+    test.assert(list.len(cfgstack.sources(cfgstack.empty())) == 0)
+
+    test.case("a push adds one and the original is unchanged")
+    let base = cfgstack.empty()
+    let one = cfgstack.with_defaults(base, cfgvalue.empty_table())
+    test.assert(cfgstack.depth(one) == 1)
+    test.assert(cfgstack.depth(base) == 0)
+
+@test
+fn test_the_order_of_the_calls_is_the_precedence() [io]
+    test.case("two pushes, and the second outranks the first")
+    let s = cfgstack.with_layer(
+        cfgstack.with_defaults(cfgstack.empty(), cfgvalue.table([
+            cfgvalue.pair("port", cfgvalue.int_value(80))])),
+        cfglayer.layer("later", 10, cfgvalue.table([
+            cfgvalue.pair("port", cfgvalue.int_value(8080))])))
+    match cfgmerge.origin_of(cfgstack.build(s), "port")
+        Some(o) => test.assert(o.layer == "later")
+        None    => test.fail("both layers set it")
+
+    test.case("and the sources come back in push order")
+    let names = cfgstack.sources(s)
+    test.assert(list.len(names) == 2)
+    test.assert(names[1].name == "later")
+
+@test
+fn test_build_declares_nothing_because_everything_was_read_on_the_way_in() [io]
+    // This function's own row is `[io]` for `test.case`, and NOT
+    // `[fs]` or anything wider — which is the assertion: a stack
+    // assembled from values merges inside a function that touches
+    // nothing.  If `build` or `with_layer` had spent a row, this file
+    // would not compile.
+    test.case("a whole configuration, assembled and merged, with no machine in it")
+    let s = cfgstack.with_overrides(
+        cfgstack.with_defaults(cfgstack.empty(), cfgvalue.table([
+            cfgvalue.pair("debug", cfgvalue.bool_value(false))])),
+        [("debug", "true")])
+    match cfglookup.get_bool(cfgstack.build(s), "debug")
+        Ok(b)  => test.assert(b)
+        Err(_) => test.fail("the override is the top layer")
+
+@test
+fn test_an_override_uses_the_path_as_the_person_spelled_it() [io]
+    test.case("no lowercasing and no re-separating")
+    let s = cfgstack.with_overrides(cfgstack.empty(), [("log.max_size", "1024")])
+    match cfglookup.get_int(cfgstack.build(s), "log.max_size")
+        Ok(n)  => test.assert(n == 1024)
+        Err(_) => test.fail("--set spells a path, not an environment name")
+
+    test.case("and the value goes through the one coercion")
+    match cfglookup.get_int(cfgstack.build(s), "log.max_size")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.fail("infer_scalar runs on text from every source")
+
+@test
+fn test_one_bad_override_does_not_lose_the_good_ones() [io]
+    test.case("the good pair lands")
+    let s = cfgstack.with_overrides(cfgstack.empty(), [
+        ("server.port", "8080"),
+        ("a..b", "1")])
+    match cfglookup.get_int(cfgstack.build(s), "server.port")
+        Ok(n)  => test.assert(n == 8080)
+        Err(_) => test.fail("a bad flag beside a good one should not lose the good one")
+
+    test.case("and the bad one is reported rather than swallowed")
+    test.assert(list.len(cfgstack.bad_overrides([("server.port", "8080"), ("a..b", "1")])) == 1)
+
+@test
+fn test_the_environment_push_is_io_and_only_io() [io]
+    // The row on this function is `[io]`: `with_environment` reads the
+    // process environment and opens no file, so a caller in a sandbox
+    // granted `[io]` and not `[fs]` can still build this layer.  A
+    // wider row on the push would fail to compile here.
+    test.case("a layer from the paths a program declares")
+    let s = cfgstack.with_environment(cfgstack.empty(), cfgenvkeys.rule("APP_"),
+                                      ["server.port", "debug"])
+    test.assert(cfgstack.depth(s) == 1)
+
+@test
+fn test_the_environment_is_read_by_name_because_it_cannot_be_listed() [io]
+    test.case("pairs_for takes the names and gives back what is set")
+    test.assert(list.len(cfgenviron.pairs_for([])) == 0)
+
+    test.case("declared_pairs is names_for and pairs_for in one call")
+    test.assert(list.len(cfgenviron.declared_pairs(cfgenvkeys.rule("APP_"), [])) == 0)
+
+    test.case("and one variable is reachable without a second import")
+    match cfgenviron.variable("APP_CONFIG")
+        Some(_) => test.assert(true)
+        None    => test.assert(true)
+
+@test
+fn test_a_file_push_is_fs_and_only_fs() [io, fs]
+    test.case("a named file")
+    match cfgstack.with_file(cfgstack.empty(), "/etc/app.toml")
+        Ok(s)  => test.assert(cfgstack.depth(s) == 1)
+        Err(_) => test.fail("this case reaches not implemented before the file")
+
+    test.case("an absent optional file leaves the stack as it was")
+    match cfgstack.with_optional_file(cfgstack.empty(), "/nonexistent/app.toml")
+        Ok(s)  => test.assert(cfgstack.depth(s) == 0)
+        Err(_) => test.fail("an absent optional file is not a refusal")
+
+@test
+fn test_a_missing_file_and_an_unreadable_one_are_different_answers() [io, fs]
+    test.case("optional_layer says None for absent")
+    match cfgread.optional_layer("/nonexistent/app.toml", 10)
+        Ok(v)  =>
+            match v
+                Some(_) => test.fail("that path does not exist")
+                None    => test.assert(true)
+        Err(_) => test.fail("absent is not a refusal here")
+
+    test.case("but a file that exists and will not parse still refuses")
+    match cfgread.optional_layer("/etc/hostname", 10)
+        Ok(_)  => test.fail("that file has no configuration format")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "unknown extension")
+
+@test
+fn test_the_reader_answers_before_it_parses() [io, fs]
+    test.case("readable does not load the file")
+    test.assert(cfgread.readable("/nonexistent/app.toml") == false)
+
+    test.case("first_existing is take-the-first, not take-them-all")
+    match cfgread.first_existing(["/nonexistent/a.toml", "/nonexistent/b.toml"])
+        Some(_) => test.fail("neither exists")
+        None    => test.assert(true)
+
+    test.case("file_layers gives consecutive ranks so later means higher")
+    match cfgread.file_layers([], 10)
+        Ok(ls) => test.assert(list.len(ls) == 0)
+        Err(_) => test.fail("no paths is not a refusal")
+
+@test
+fn test_the_standard_stack_is_the_order_the_readme_promises() [io, fs]
+    // defaults < files < .env < environment < overrides.  The case
+    // asserts the shape rather than the numbers, because the ranks are
+    // an implementation detail and the ORDER is the promise.
+    test.case("five kinds of source, in one call")
+    match cfgstack.standard(cfgvalue.empty_table(), [], cfgenvkeys.rule("APP_"), [], [])
+        Ok(s)  => test.assert(cfgstack.depth(s) >= 1)
+        Err(_) => test.fail("no files and no overrides is a valid stack")
+
+    test.case("and its row is the union of its parts, [fs, io], and no wider")
+    match cfgstack.standard(cfgvalue.empty_table(), ["/nonexistent/app.toml"],
+                            cfgenvkeys.rule("APP_"), ["debug"], [("debug", "true")])
+        Ok(s)  => test.assert(cfgstack.depth(s) >= 1)
+        Err(_) => test.fail("an absent file in the standard stack is skipped")

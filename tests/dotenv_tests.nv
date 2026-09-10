@@ -1,0 +1,263 @@
+// dotenv_tests.nv — the API suite for the `.env` grammar and the
+// format adapters, with no file anywhere in it.
+//
+// RED ON PURPOSE: every body is a `todo()`.  Run with `--isolate` for
+// one verdict per `@test`.
+//
+// WHY THESE CASES TAKE TEXT AND NOT A PATH.  `parse_dotenv` declares
+// no effects, so the grammar is testable against a fixture string —
+// which is the same reason `config-core-nv`'s environment mapping
+// takes pairs.  The two cases that DO name a path are here to pin the
+// effect rows, and they reach `not implemented` before they open
+// anything.
+
+use std.test
+use std.list
+use cfgdotenv
+use cfgadapt
+use cfgread
+use cfgstack
+use cfgenviron
+use cfgenvkeys
+use std.json
+use cfgsource
+use cfgvalue
+use cfgfault
+
+@test
+fn test_the_dotenv_grammar_takes_the_plain_forms() [io]
+    test.case("NAME=value")
+    match cfgdotenv.parse_dotenv("APP_DEBUG=true\n", "<memory>")
+        Ok(ps) => test.assert(list.len(ps) == 1)
+        Err(_) => test.fail("that is the whole of the grammar")
+
+    test.case("export is accepted and ignored")
+    match cfgdotenv.parse_dotenv("export APP_DEBUG=true\n", "<memory>")
+        Ok(ps) => test.assert(ps[0].0 == "APP_DEBUG")
+        Err(_) => test.fail("both reference implementations accept export")
+
+    test.case("an empty value is the empty string, not an unset")
+    match cfgdotenv.parse_dotenv("APP_PROXY=\n", "<memory>")
+        Ok(ps) => test.assert(ps[0].1 == "")
+        Err(_) => test.fail("NAME= is a name bound to nothing")
+
+    test.case("blanks and comments contribute nothing")
+    match cfgdotenv.parse_dotenv("# a comment\n\nAPP_DEBUG=true\n", "<memory>")
+        Ok(ps) => test.assert(list.len(ps) == 1)
+        Err(_) => test.fail("a comment is not a pair")
+
+@test
+fn test_the_two_quoting_forms_differ_in_one_way() [io]
+    test.case("single quotes take the text as written")
+    match cfgdotenv.parse_dotenv("A='a\\nb'\n", "<memory>")
+        Ok(ps) => test.assert(ps[0].1 == "a\\nb")
+        Err(_) => test.fail("single quotes have no escapes")
+
+    test.case("double quotes apply the escapes")
+    match cfgdotenv.parse_dotenv("A=\"a\\nb\"\n", "<memory>")
+        Ok(ps) => test.assert(ps[0].1 != "a\\nb")
+        Err(_) => test.fail("double quotes escape")
+
+    test.case("an unterminated quote names the line")
+    match cfgdotenv.parse_dotenv("A='unterminated\n", "<memory>")
+        Ok(_)  => test.fail("that quote never closes")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "bad env line")
+            test.assert(cfgsource.read_fault_line(e) == 1)
+
+@test
+fn test_there_is_no_interpolation() [io]
+    test.case("a dollar sign is two characters")
+    match cfgdotenv.parse_dotenv("A=1\nB=\$A\n", "<memory>")
+        Ok(ps) => test.assert(ps[1].1 == "\$A")
+        Err(_) => test.fail("that is a well-formed file")
+
+    test.case("and it is not interpolated inside double quotes either")
+    match cfgdotenv.parse_dotenv("A=1\nB=\"\$A\"\n", "<memory>")
+        Ok(ps) => test.assert(ps[1].1 == "\$A")
+        Err(_) => test.fail("that is a well-formed file")
+
+@test
+fn test_a_duplicate_name_takes_the_last_one() [io]
+    test.case("which is what a shell does when a variable is exported twice")
+    match cfgdotenv.parse_dotenv("A=1\nA=2\n", "<memory>")
+        Ok(ps) =>
+            let last = ps[list.len(ps) - 1]
+            test.assert(last.1 == "2")
+        Err(_) => test.fail("a repeated name is not an error")
+
+@test
+fn test_a_line_that_is_not_a_pair_is_named() [io]
+    test.case("no equals sign at all")
+    match cfgdotenv.parse_dotenv("APP_DEBUG\n", "<memory>")
+        Ok(_)  => test.fail("that line binds nothing")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "bad env line")
+
+    test.case("and the origin travels with the fault")
+    match cfgdotenv.parse_dotenv("APP_DEBUG\n", "/srv/app/.env")
+        Ok(_)  => test.fail("that line binds nothing")
+        Err(e) => test.assert(cfgsource.read_fault_path(e) == "/srv/app/.env")
+
+@test
+fn test_render_is_the_parsers_inverse() [io]
+    test.case("a value needing no quotes")
+    let plain = [("APP_DEBUG", "true")]
+    match cfgdotenv.parse_dotenv(cfgdotenv.render_dotenv(plain), "<memory>")
+        Ok(ps) => test.assert(ps[0].1 == "true")
+        Err(_) => test.fail("render produces text parse accepts")
+
+    test.case("and one that does")
+    let awkward = [("APP_MSG", "a \"quoted\" thing")]
+    match cfgdotenv.parse_dotenv(cfgdotenv.render_dotenv(awkward), "<memory>")
+        Ok(ps) => test.assert(ps[0].1 == "a \"quoted\" thing")
+        Err(_) => test.fail("render quotes what needs quoting")
+
+@test
+fn test_a_dotenv_becomes_a_layer_and_not_the_environment() [io, fs]
+    test.case("the layer carries the name and rank it was given")
+    match cfgdotenv.dotenv_layer(cfgenvkeys.rule("APP_"), ".env", ".env", 20)
+        Ok(l)  =>
+            test.assert(l.name == ".env")
+            test.assert(l.rank == 20)
+        Err(_) => test.fail("this case reaches not implemented before the file")
+
+    test.case("an absent file is None, not a refusal")
+    match cfgdotenv.optional_dotenv_layer(cfgenvkeys.rule("APP_"), ".env", ".env", 20)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.fail("a missing .env is the common case in production")
+
+@test
+fn test_the_extension_decides_the_parser() [io]
+    test.case("the four this package reads")
+    match cfgadapt.format_of("/etc/app.toml")
+        Some(f) => test.assert(cfgadapt.format_name(f) == "toml")
+        None    => test.fail(".toml is a format")
+    match cfgadapt.format_of("/etc/app.yml")
+        Some(f) => test.assert(cfgadapt.format_name(f) == "yaml")
+        None    => test.fail(".yml is a format")
+    match cfgadapt.format_of("/etc/app.json")
+        Some(f) => test.assert(cfgadapt.format_name(f) == "json")
+        None    => test.fail(".json is a format")
+
+    test.case("case does not matter, because Config.TOML is the same file")
+    match cfgadapt.format_of("/etc/Config.TOML")
+        Some(f) => test.assert(cfgadapt.format_name(f) == "toml")
+        None    => test.fail("the extension is matched case-insensitively")
+
+    test.case("and anything else has no format, including no extension at all")
+    match cfgadapt.format_of("/etc/app.conf")
+        Some(_) => test.fail("this package does not guess")
+        None    => test.assert(true)
+    match cfgadapt.format_of("/etc/appconfig")
+        Some(_) => test.fail("no extension, no format")
+        None    => test.assert(true)
+
+@test
+fn test_parse_text_is_the_reader_without_the_file() [io]
+    test.case("a TOML document with no path in sight")
+    match cfgadapt.parse_text(FormatToml, "port = 8080\n", "<memory>")
+        Ok(v)  => test.assert(cfgvalue.is_table(v))
+        Err(_) => test.fail("that is a TOML document")
+
+    test.case("a parse failure carries the parser's own line and reason")
+    match cfgadapt.parse_text(FormatToml, "port = = 8080\n", "<memory>")
+        Ok(_)  => test.fail("that is not a TOML document")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "parse failed")
+            test.assert(cfgsource.read_fault_line(e) == 1)
+
+@test
+fn test_a_yaml_key_that_is_a_collection_is_refused_not_flattened() [io]
+    test.case("because a dotted path could not name it afterwards")
+    match cfgadapt.parse_text(FormatYaml, "? [a, b]\n: 1\n", "<memory>")
+        Ok(_)  => test.fail("a sequence key has no path")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "unusable shape")
+
+@test
+fn test_the_three_adapters_take_the_three_trees() [io]
+    // The adapters declare NO EFFECTS — they are in the host half
+    // because that is where the parsers are, not because they perform
+    // anything — so this function's row is `[io]` for `test.case`
+    // alone, and every call below is made from inside it.
+    test.case("a YAML document becomes a config value")
+    match cfgadapt.parse_text(FormatYaml, "port: 8080\n", "<memory>")
+        Ok(v)  => test.assert(cfgvalue.is_table(v))
+        Err(_) => test.fail("that is a YAML document")
+
+    test.case("and a JSON one, whose arms have to be discovered")
+    match cfgadapt.parse_text(FormatJson, "{\"port\": 8080}", "<memory>")
+        Ok(v)  => test.assert(cfgvalue.is_table(v))
+        Err(_) => test.fail("that is a JSON document")
+
+    test.case("from_toml takes toml-nv's tree directly")
+    test.assert(cfgvalue.kind_name(cfgvalue.kind_of(cfgadapt.from_toml(TomlInt(8080)))) == "int")
+
+    test.case("from_yaml takes yaml-nv's, or says why it cannot")
+    match cfgadapt.from_yaml(YamlInt(8080))
+        Ok(y)  => test.assert(cfgvalue.kind_name(cfgvalue.kind_of(y)) == "int")
+        Err(_) => test.fail("a scalar has a reading")
+
+    test.case("and from_json takes the standard library's handle")
+    match json.parse("8080")
+        Some(j) => test.assert(cfgvalue.kind_name(cfgvalue.kind_of(cfgadapt.from_json(j))) == "int")
+        None    => test.fail("that is JSON")
+
+@test
+fn test_the_file_readers_declare_fs_and_only_fs() [io, fs]
+    // `[fs]` for the file readers and NOT `[io]`: `cfgread` opens
+    // named files and never reads the process environment.
+    test.case("a file by path")
+    match cfgread.file_layer("/nonexistent/app.toml", 10)
+        Ok(_)  => test.fail("that path does not exist")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "no such file")
+
+    test.case("a file whose format the caller names")
+    match cfgread.file_layer_as(FormatToml, "/nonexistent/app.conf", 10)
+        Ok(_)  => test.fail("that path does not exist")
+        Err(_) => test.assert(true)
+
+    test.case("and the pairs of a .env file, without building a layer")
+    match cfgdotenv.read_dotenv("/nonexistent/.env")
+        Ok(_)  => test.fail("that path does not exist")
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_environment_layer_is_io_and_the_stack_pushes_agree() [io, fs]
+    // `[io]` for the environment and `[fs]` for the two file pushes:
+    // this function's row is the union, and nothing here is wider.
+    test.case("a layer from the paths a program declares")
+    test.assert(cfgenviron.env_layer(cfgenvkeys.rule("APP_"), ["server.port"],
+                                     "APP_ environment", 30).rank == 30)
+
+    test.case("or from candidate names, for a legacy variable")
+    test.assert(cfgenviron.env_layer_of(cfgenvkeys.rule("APP_"), ["APP_SERVER__PORT"],
+                                        "APP_ environment", 30).name == "APP_ environment")
+
+    test.case("prefixed_pairs filters the candidates before looking them up")
+    test.assert(list.len(cfgenviron.prefixed_pairs(cfgenvkeys.rule("APP_"), ["PATH"])) == 0)
+
+    test.case("with_files pushes every file that is there")
+    match cfgstack.with_files(cfgstack.empty(), [])
+        Ok(s)  => test.assert(cfgstack.depth(s) == 0)
+        Err(_) => test.fail("no paths is not a refusal")
+
+    test.case("and with_dotenv pushes one if it is there")
+    match cfgstack.with_dotenv(cfgstack.empty(), cfgenvkeys.rule("APP_"), "/nonexistent/.env")
+        Ok(s)  => test.assert(cfgstack.depth(s) == 0)
+        Err(_) => test.fail("an absent .env is the common case in production")
+
+@test
+fn test_a_value_fault_travels_across_unrewritten() [io]
+    test.case("value_fault unwraps the one level")
+    match cfgsource.value_fault(ReadValueFault(CfgMissing("server.port")))
+        Some(v) => test.assert(cfgfault.fault_kind(v) == "missing")
+        None    => test.fail("that arm carries one")
+
+    test.case("and a file fault has none")
+    match cfgsource.value_fault(ReadNotText("/etc/app.toml"))
+        Some(_) => test.fail("that fault is about bytes, not a key")
+        None    => test.assert(true)
+
+    test.case("only a missing file counts as absent")
+    test.assert(cfgsource.is_absent(ReadNoSuchFile("/etc/app.toml")))
+    test.assert(cfgsource.is_absent(ReadDenied("/etc/shadow")) == false)

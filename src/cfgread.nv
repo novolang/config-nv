@@ -1,0 +1,123 @@
+// cfgread.nv — files, by path, dispatched on their extension.
+//
+// `[fs]` AND NOTHING ELSE.  Reading a file is `[fs]`; the parsers this
+// hands the bytes to declare nothing, and neither does the adapter.
+// So every row in this module is exactly `[fs]`, which is the narrowest
+// honest claim for "open a named file and give me a layer".
+//
+// A MISSING FILE IS NOT AN ERROR TO EVERY CALLER.  A program with
+// `/etc/app.toml`, `~/.config/app.toml` and `./app.toml` expects most
+// of them to be absent, so `optional_layer` returns `?ConfigLayer` and
+// `file_layer` returns a `Result` — two functions rather than one with
+// a flag, because the two callers want different types back and a flag
+// would give them both the same one.
+//
+// THE RANK IS THE CALLER'S.  Nothing here invents a precedence: a
+// reader that decided `/etc` outranks `~` would be making a policy
+// decision on behalf of a program it knows nothing about.
+// `cfgstack` is where an order is declared, and it is declared by the
+// program.
+
+// A layer from one file, or the reason there is none.
+//
+// The extension decides the parser: `.toml`, `.yaml`, `.yml`,
+// `.json`.  The layer's name is the path as given, because that is
+// what a person needs to see in a provenance answer — not `"toml"`,
+// which does not say which of three TOML files won.
+//
+// ```novo
+// use cfgread
+//
+// fn load() -> Result<ConfigLayer, ConfigReadFault> [fs]
+//     cfgread.file_layer("/etc/app.toml", 10)
+// ```
+pub fn file_layer(path: Str, rank: Int) -> Result<ConfigLayer, ConfigReadFault> [fs]
+    todo("config-nv.cfgread.file_layer")
+
+// The same, with a file that is not there reported as `None` rather
+// than as a refusal.
+//
+// Every OTHER reason still refuses: a file that exists and will not
+// parse is a `Result` in the second position, because a program that
+// treated an unreadable configuration file as "absent" would start up
+// with the wrong settings and no complaint.
+//
+// ```novo
+// use cfgread
+//
+// fn load() -> Result<?ConfigLayer, ConfigReadFault> [fs]
+//     cfgread.optional_layer("~/.config/app.toml", 20)
+// ```
+pub fn optional_layer(path: Str, rank: Int) -> Result<?ConfigLayer, ConfigReadFault> [fs]
+    todo("config-nv.cfgread.optional_layer")
+
+// A layer from a file whose format the caller names.
+//
+// For a file whose extension is wrong or absent: `.conf` that is
+// really TOML, a `/proc` path, a file called `config`.
+//
+// ```novo
+// use cfgread
+//
+// fn load() -> Result<ConfigLayer, ConfigReadFault> [fs]
+//     cfgread.file_layer_as(FormatToml, "/etc/app.conf", 10)
+// ```
+pub fn file_layer_as(f: ConfigFormat, path: Str,
+                     rank: Int) -> Result<ConfigLayer, ConfigReadFault> [fs]
+    todo("config-nv.cfgread.file_layer_as")
+
+// Every file in a list that is there, as layers, in list order with
+// ascending ranks from `first_rank`.
+//
+// The `/etc`, `~`, `./` shape in one call: the ones that are absent
+// are skipped, the ones that are there get consecutive ranks so that
+// later in the list means higher precedence, and anything that exists
+// and will not parse refuses the whole call.
+//
+// A program that wants one bad file not to stop it calls
+// `optional_layer` in its own loop; this one is the strict reading,
+// because "start with a configuration file I could not read" is the
+// failure mode worth defaulting to loud.
+//
+// ```novo
+// use cfgread
+//
+// fn load() -> Result<[ConfigLayer], ConfigReadFault> [fs]
+//     cfgread.file_layers(["/etc/app.toml", "app.toml"], 10)
+// ```
+pub fn file_layers(paths: [Str], first_rank: Int) -> Result<[ConfigLayer], ConfigReadFault> [fs]
+    todo("config-nv.cfgread.file_layers")
+
+// Whether a path exists and can be read.
+//
+// Exposed because a program that prints "these are the files I looked
+// for and these are the ones I found" needs the answer before it
+// decides what to do about it, and calling `file_layer` to find out
+// would parse the file as a side effect of asking.
+//
+// ```novo
+// use cfgread
+//
+// fn main() [fs, io]
+//     if cfgread.readable("/etc/app.toml")
+//         println("found /etc/app.toml")
+// ```
+pub fn readable(path: Str) -> Bool [fs]
+    todo("config-nv.cfgread.readable")
+
+// The first path in a list that exists, or `None`.
+//
+// The "search these places in order and take the first" shape, which
+// is a different policy from `file_layers`' "take all of them" and is
+// what a program with a `--config` flag and a default location wants.
+//
+// ```novo
+// use cfgread
+//
+// fn main() [fs, io]
+//     match cfgread.first_existing(["./app.toml", "/etc/app.toml"])
+//         Some(p) => println(p)
+//         None    => println("no configuration file")
+// ```
+pub fn first_existing(paths: [Str]) -> ?Str [fs]
+    todo("config-nv.cfgread.first_existing")
