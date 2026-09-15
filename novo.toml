@@ -1,6 +1,6 @@
 [package]
 name        = "config-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "The half of a configuration library that touches the machine: files read by path and dispatched on extension to toml-nv, yaml-nv or std.json, the process environment behind a prefix, a .env file with the dotenv grammar, and command-line overrides — each producing one config-core-nv layer, stacked in a declared order."
 license     = "Apache-2.0"
 
