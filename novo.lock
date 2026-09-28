@@ -3,27 +3,27 @@
 [calendar-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.0.2"
-version = "0.0.2"
-hash = "96409f46f3946d4b40437754edc7e8a6f044521cfe286f5723ff10205a581f48"
+req = "^0.2.0"
+version = "0.2.1"
+hash = "c81b54f47ee0efd44548a81c1427880e4a001e3133333b268b8d331ccd480e42"
 
 [config-core-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.0.1"
-version = "0.0.1"
-hash = "c8c0a8aa5f3c823509498884d99142f23a760adbbfa7cf62de5cc2e6510ad8ff"
+req = "^0.1.0"
+version = "0.1.0"
+hash = "44d14ac64b9ffc87c1b25a451a9992ff3472dc4bfcff66ee9119dda3f1024d51"
 
 [toml-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.0.3"
-version = "0.0.3"
-hash = "8562318b3dc6620fa6c4b90e0f2d7818d97f324481061bbe78ef33d755c7ee09"
+req = "^0.1.1"
+version = "0.1.1"
+hash = "64f4878f0cd2a5f059185b26745f265d5319fc3f04dc7ad7e92b35ef4f065888"
 
 [yaml-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.0.2"
-version = "0.0.2"
-hash = "6f1512e2949936130b354b9ef9e4f03c207eefd29cc6558720a5a97c7319a6e7"
+req = "^0.1.1"
+version = "0.1.1"
+hash = "acfbc3ec882c5416cd85bb54d7c544ba0a4f2e94e0208be10c62781f279dadac"

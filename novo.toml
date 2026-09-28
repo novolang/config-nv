@@ -1,6 +1,6 @@
 [package]
 name        = "config-nv"
-version     = "0.0.2"
+version     = "0.0.3"
 description = "The half of a configuration library that touches the machine: files read by path and dispatched on extension to toml-nv, yaml-nv or std.json, the process environment behind a prefix, a .env file with the dotenv grammar, and command-line overrides — each producing one config-core-nv layer, stacked in a declared order."
 license     = "Apache-2.0"
 
@@ -43,7 +43,7 @@ novo        = ">= 0.8.9"
 # dependency is refused by `novo pkg publish`, `--dry-run` included,
 # because the tarball would carry the path and send every consumer to a
 # directory that is not on their machine.
-config-core-nv = "^0.0.1"
+config-core-nv = "^0.1.0"
 
 # The two format parsers, from the registry.  BOTH ARE INTERFACES
 # themselves — 0.0.x, `stability = "draft"`, every body a `todo()` — so
@@ -55,7 +55,7 @@ config-core-nv = "^0.0.1"
 # Under the caret rule a `0.0.x` version has no compatible neighbours:
 # `^0.0.3` means exactly 0.0.3, and a republished parser needs this
 # line edited.
-toml-nv     = "^0.0.3"
-yaml-nv     = "^0.0.2"
+toml-nv     = "^0.1.1"
+yaml-nv     = "^0.1.1"
 
 # JSON is `std.json` and costs no dependency at all.
