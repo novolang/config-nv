@@ -7,29 +7,33 @@
 // function is `env.get(name: Str) -> ?Str`, whose own row is `[io]`,
 // and this module is that call in a loop.
 //
-// **THE STANDARD LIBRARY CANNOT ENUMERATE THE ENVIRONMENT.**  There is
-// `env.get(name)` and `process.env(name)`, both by name, and there is
-// no `env.vars()`.  So this package cannot scan for everything
-// starting `APP_`, the way Rust's `config` and Python's dynaconf do,
-// and the shape of the API is different because of it:
+// **THE ENVIRONMENT IS READ BY NAME, NOT SCANNED.**  `std.env` can
+// list what the process was started with — `env.names()` and
+// `env.vars()` — and this module still asks a program for the paths it
+// understands instead of walking that list, because the direction
+// that matters is the one that is a function: `cfgenvkeys` turns a
+// PATH into a NAME, and a name does not turn back into one path.
+// `APP_DEBUG_LEVEL` is as much `debug.level` as it is `debug_level`,
+// and a scan that guessed would put values in the tree at keys the
+// program never named.
 //
 //   a program DECLARES the paths it understands
 //   `cfgenvkeys.names_for` turns those into environment names
 //   this module looks those names up, one at a time
 //
-// That is a real constraint and it has one real consequence: a
-// variable a program did not declare is invisible, where a scanning
-// library would have picked it up and put it in the tree.  It also has
-// one real benefit, which is why the shape is not being apologised
-// for: `declared_pairs` cannot be surprised by a variable somebody
-// exported in a shell profile, and a program's configuration surface
-// is the list it wrote down.
+// A variable a program did not declare is invisible.  That is the
+// consequence, and it is also the benefit: `declared_pairs` cannot be
+// surprised by a variable somebody exported in a shell profile, and a
+// program's configuration surface is the list it wrote down.
 //
-// `prefixed_pairs` exists for the day the enumeration does: it takes
-// the candidate names explicitly today, and its signature does not
-// change if the standard library grows a lister.
+// `prefixed_pairs` is the scan for a program that wants one: hand it
+// `env.names()` and it filters the candidates by prefix before
+// looking any of them up.
 
 use std.env
+use std.list
+use std.str
+use cfgenvkeys
 
 // The `(name, value)` pairs for a list of names, skipping the ones
 // that are unset.
@@ -46,7 +50,12 @@ use std.env
 //     cfgenviron.pairs_for(["APP_SERVER__PORT", "APP_DEBUG"])
 // ```
 pub fn pairs_for(names: [Str]) -> [(Str, Str)] [io]
-    todo("config-nv.cfgenviron.pairs_for")
+    var out: [(Str, Str)] = []
+    for n in names
+        match env.get(n)
+            Some(v) => list.push(out, (n, v))
+            None    => ()
+    out
 
 // The pairs for the names a rule maps a program's paths to.
 //
@@ -62,7 +71,7 @@ pub fn pairs_for(names: [Str]) -> [(Str, Str)] [io]
 //     cfgenviron.declared_pairs(cfgenvkeys.rule("APP_"), ["server.port", "debug"])
 // ```
 pub fn declared_pairs(r: EnvKeyRule, paths: [Str]) -> [(Str, Str)] [io]
-    todo("config-nv.cfgenviron.declared_pairs")
+    pairs_for(cfgenvkeys.names_for(r, paths))
 
 // The pairs for a list of candidate names that carry the rule's
 // prefix.
@@ -79,7 +88,11 @@ pub fn declared_pairs(r: EnvKeyRule, paths: [Str]) -> [(Str, Str)] [io]
 //     cfgenviron.prefixed_pairs(cfgenvkeys.rule("APP_"), ["APP_DEBUG", "PATH"])
 // ```
 pub fn prefixed_pairs(r: EnvKeyRule, candidates: [Str]) -> [(Str, Str)] [io]
-    todo("config-nv.cfgenviron.prefixed_pairs")
+    var kept: [Str] = []
+    for c in candidates
+        if str.starts_with(c, r.prefix)
+            list.push(kept, c)
+    pairs_for(kept)
 
 // **A layer from the environment**: the paths a program declares,
 // looked up under a rule.
@@ -97,7 +110,7 @@ pub fn prefixed_pairs(r: EnvKeyRule, candidates: [Str]) -> [(Str, Str)] [io]
 //                          "APP_ environment", 30)
 // ```
 pub fn env_layer(r: EnvKeyRule, paths: [Str], name: Str, rank: Int) -> ConfigLayer [io]
-    todo("config-nv.cfgenviron.env_layer")
+    cfgenvkeys.layer_from(r, declared_pairs(r, paths), name, rank)
 
 // A layer from a list of candidate NAMES rather than paths.
 //
@@ -115,7 +128,7 @@ pub fn env_layer(r: EnvKeyRule, paths: [Str], name: Str, rank: Int) -> ConfigLay
 //                             "APP_ environment", 30)
 // ```
 pub fn env_layer_of(r: EnvKeyRule, names: [Str], name: Str, rank: Int) -> ConfigLayer [io]
-    todo("config-nv.cfgenviron.env_layer_of")
+    cfgenvkeys.layer_from(r, pairs_for(names), name, rank)
 
 // One variable, as the standard library gives it.
 //
@@ -133,4 +146,4 @@ pub fn env_layer_of(r: EnvKeyRule, names: [Str], name: Str, rank: Int) -> Config
 //         None    => println("not set")
 // ```
 pub fn variable(name: Str) -> ?Str [io]
-    todo("config-nv.cfgenviron.variable")
+    env.get(name)

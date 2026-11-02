@@ -14,11 +14,6 @@ package depends on and which reads nothing. The layering model of both is Rust's
 source of values is named, carries a precedence, and is merged into one common
 value tree.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared with
-its full signature, but every body is a `todo()` that panics when called. The
-package is published so its design can be reviewed and depended on before it is
-implemented. Version 0.1.0 will be the first working release.
-
 ## What it is
 
 A **layer** is a named source of values with a precedence, defined by
@@ -96,8 +91,7 @@ fn main() [fs, io]
 With `APP_SERVER__PORT=8080` exported, this prints `8080`. With nothing
 exported and no file present, it prints `80`.
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test` fails
-on purpose: every test reaches a `not implemented` panic.
+Build and test with `novo pkg build` and `novo test`.
 
 ## What the package contains
 
@@ -131,6 +125,11 @@ compiled into the binary.
 **A program that wants the pairs rather than a layer calls
 `cfgdotenv.read_dotenv` or `cfgenviron.pairs_for`.** A `.env`'s pairs are what
 a program hands to a subprocess it is about to spawn.
+
+**A program that wants a file's bytes rather than a layer calls
+`cfgread.read_text`.** It is the reading half of `cfgread.file_layer` with no
+format dispatch — for a program that hashes a file to notice a reload, or
+prints it, or hands it to a parser of its own.
 
 ## The rules a user needs
 
@@ -167,10 +166,18 @@ a program hands to a subprocess it is about to spawn.
    extension is wrong or absent.
 7. **The layer's name is the path as given.** A provenance answer that said
    `toml` would not say which of three TOML files won.
-8. **The environment cannot be enumerated.** The standard library reads one
-   variable by name and has no lister. A program declares the paths it
-   understands, `cfgenvkeys.name_for` turns each into a name, and this package
-   looks those names up. A variable a program did not declare is invisible.
+8. **The environment is read by name, not scanned.** The standard library can
+   list what the process was started with, and this package still asks a
+   program for the paths it understands, because the direction that matters is
+   the one that is a function: `cfgenvkeys.name_for` turns a path into a name
+   and no name turns back into one path — `APP_DEBUG_LEVEL` is as much
+   `debug.level` as it is `debug_level`. A program declares the paths it
+   understands, and this package looks those names up. A variable a program did
+   not declare is invisible, so `declared_pairs` cannot be surprised by a
+   variable somebody exported in a shell profile.
+   `cfgenviron.prefixed_pairs` is the scan, for a program that wants one: it
+   takes `env.names()` and filters the candidates by prefix before looking any
+   of them up.
 9. **A `.env` file does not touch the process environment.** Nothing here sets
    a variable. The file becomes a layer, so a provenance answer can say a value
    came from `.env` rather than from the environment the program started with.
@@ -180,6 +187,7 @@ a program hands to a subprocess it is about to spawn.
     | Line | Meaning |
     | --- | --- |
     | `NAME=value` | the pair |
+    | `NAME = value` | blanks around the `=` are ignored |
     | `export NAME=value` | `export ` is accepted and ignored |
     | `NAME='value'` | no escapes, no interpolation, newline permitted |
     | `NAME="value"` | `\n`, `\r`, `\t`, `\\`, `\"` and `\$` are escapes |
@@ -205,9 +213,13 @@ a program hands to a subprocess it is about to spawn.
     boolean, integer, float, string. Integer comes before float, so a JSON
     number that is whole reaches `get_int`. A value that answers to none of
     them becomes null.
-17. **Both format parsers are interfaces themselves.** toml-nv and yaml-nv are
-    draft releases whose bodies panic, so a program that assembles this
-    dependency closure today builds and panics on the first parse.
+17. **A refusal carries the position the reader had.** A document that fails to
+    parse answers `ReadParseFailed(path, line, col, why)` with the parser's own
+    1-based line and column and its own sentence, unrewritten — a TOML error
+    that says "duplicate key" keeps saying that. A `.env` line that is not a
+    pair answers `ReadBadEnvLine(path, line, why)` with the rule it broke. JSON
+    is the exception: `std.json` reports no position, so its line and column
+    are `-1`, this package's spelling of "no line".
 
 ## What is not included
 
@@ -260,11 +272,17 @@ a program hands to a subprocess it is about to spawn.
 novo test tests                          # every suite
 novo test tests/dotenv_tests.nv          # the .env grammar and the format adapters
 novo test tests/stack_tests.nv           # the builder, the file reader, the environment
+novo test tests/text_edges_tests.nv      # the grammar's edges, with no file in it
+novo test tests/machine_edges_tests.nv   # the reading half, against tests/fixtures/
 ```
 
-`novo test` fails on purpose today. Every assertion reaches a `not implemented:
-config-nv.<module>.<fn>` panic, because every body is a `todo()`. Run it with
-`--isolate` for one verdict per test, naming the function it stopped at.
+`novo test` takes `--isolate` for one verdict per test, naming the case it
+stopped at.
+
+`tests/coverage.sh` measures line coverage over `src/` and merges it across
+every `@test`, one process each. `--cov` cannot be combined with `--isolate`,
+and the one-process runner stops at the first failing test — which the two red
+cases below would otherwise use to hide every line after them.
 
 The `.env` cases come from the grammar dotenvy and python-dotenv share, and the
 three places they disagree are the three rules listed above. The suite asserts
@@ -276,24 +294,32 @@ push. One of its tests builds a two-layer configuration and reads a value out
 of it inside a function whose only effect is `[io]`, for printing. That test
 compiles only because `cfgstack.build` declares nothing.
 
-## Implementation status
+Two cases in the two shipped suites name a file and assert the layer they get
+back from it: `cfgstack.with_file(cfgstack.empty(), "/etc/app.toml")` in
+`stack_tests.nv` and `cfgdotenv.dotenv_layer(…, ".env", ".env", 20)` in
+`dotenv_tests.nv`. Neither file is on the machine this package was verified on
+and neither can be shipped — the publish allow-list is `novo.toml`, `src/`,
+`README.md`, `CHANGELOG.md`, `LICENSE`, `examples/` and `assets/`, so a `.env`
+at the package root would make one case green here and red everywhere else.
+Both cases are left as the release wrote them and both are recorded in the
+CHANGELOG's `### Known`.
 
-| Item | Implemented |
-| --- | --- |
-| `cfgsource.ConfigFormat`, `.ConfigReadFault`, `impl Error for ConfigReadFault` | declared |
-| `cfgsource.read_fault_path`, `.read_fault_kind`, `.read_fault_line`, `.value_fault`, `.is_absent` | no |
-| `cfgadapt.from_toml`, `.from_yaml`, `.from_json` | no |
-| `cfgadapt.format_of`, `.format_name`, `.parse_text` | no |
-| `cfgread.file_layer`, `.optional_layer`, `.file_layer_as`, `.file_layers`, `.readable`, `.first_existing` | no |
-| `cfgenviron.pairs_for`, `.declared_pairs`, `.prefixed_pairs` | no |
-| `cfgenviron.env_layer`, `.env_layer_of`, `.variable` | no |
-| `cfgdotenv.parse_dotenv`, `.render_dotenv` | no |
-| `cfgdotenv.dotenv_layer`, `.optional_dotenv_layer`, `.read_dotenv` | no |
-| `cfgstack.ConfigStack` | declared |
-| `cfgstack.empty`, `.depth`, `.with_layer`, `.with_defaults`, `.sources` | no |
-| `cfgstack.with_file`, `.with_optional_file`, `.with_files`, `.with_dotenv` | no |
-| `cfgstack.with_environment`, `.with_overrides`, `.bad_overrides`, `.build` | no |
-| `cfgstack.standard` | no |
+`machine_edges_tests.nv` reaches `cfgread.read_text`'s third answer for real:
+it makes a file in the temp directory, sets its mode to `0` and asserts
+`ReadDenied`. That case is red in a run as root, whose CAP_DAC_OVERRIDE reads a
+mode-000 file; it fails loudly there rather than passing without asserting
+anything, and the CHANGELOG's `### Known` says so.
+
+`text_edges_tests.nv` and `machine_edges_tests.nv` carry the edges the two
+shipped suites do not: every escape the grammar names, the borders of a name,
+the render round trip, the three adapters' refusals, and — against the files
+under `tests/fixtures/` — the precedence every push moves and the rank each
+push takes. They also carry the reaches the shipped suites make only after
+their red case — four of them, from `format_name`'s toml and json arms to
+`first_existing`'s `None` — because a one-process coverage run stops at the
+first failure and would never see them. The file-reading cases run against
+fixtures rather than against the machine, which is what makes them true
+everywhere.
 
 ## Licence
 

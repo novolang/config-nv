@@ -20,24 +20,72 @@
 //   YAML   a mapping key that is not a scalar is REFUSED, not
 //          flattened — a dotted path cannot name a sequence, so a
 //          document that used one would have keys no getter could
-//          reach.  A non-string scalar key is rendered with the
-//          document's own spelling: `1:` becomes the key `"1"`.
-//          Anchors and aliases are already resolved by yaml-nv;
-//          nothing here sees them.
+//          reach.  yaml-nv refuses that document itself, at the key,
+//          so `yaml_fault` translates its `ComplexKey` refusal into
+//          this package's shape arm and the sentence carries the
+//          position the fault type has no field for.  A non-string
+//          scalar key is rendered with the document's own spelling:
+//          `1:` becomes the key `"1"`.  Anchors and aliases are
+//          already resolved by yaml-nv; nothing here sees them.
 //   JSON   nothing is lost, and everything is discovered.  See below.
 //
 // THE JSON ADAPTER IS THE AWKWARD ONE.  `std.json`'s value is
-// `JsonValueH`, an opaque handle whose accessors return `?Any`; there
-// is no arm to match on.  So `from_json` has to DISCOVER the shape by
-// trying, in this order: `json.keys` for an object, `json.to_list` for
-// an array, then `to_bool`, `to_int`, `to_float`, `to_str`.  The
-// order matters — `to_int` before `to_float`, because a JSON number
-// that is a whole number should reach `get_int` — and a value nothing
-// answers for becomes `CfgNull`, because JSON's null is the only value
-// with no accessor.  It is written down because it is a rule nobody
-// can read off the standard library page.
+// `JsonValueH`, an opaque handle whose accessors return `?Any`: there
+// is no arm to match on.  `json.type_of` names the kind, so the shape
+// is discovered from that one call rather than by trying six
+// accessors — and it is the only call that can be asked, because two
+// different pairs collapse under the accessors.  `keys` answers `[]`
+// for a `null` AND for an empty object, so probing would read `null`
+// as a table; and `json.to_int` answers `1` for `1.5`, because it
+// truncates, so probing would read every double as an integer.  A
+// NUMBER is therefore settled by its own spelling: `json.stringify`
+// of it, read back through `str.to_int`, accepts a whole 64-bit
+// literal and refuses `1.0`, `1e20` and `1.5` — which is exactly
+// RFC 8259's "written with no fraction and no exponent".  Anything
+// `type_of` does not name becomes `CfgNull`, which is where JSON's
+// `null` lands.
 
 use std.json
+use std.list
+use std.str
+use cfgvalue
+use iso8601
+use tomlread
+use tomlerror
+use yamlread
+use yamlerror
+use yamlnode
+use yamlsafe
+use cfgsource
+
+// One TOML table's pairs, adapted.
+fn toml_pairs(pairs: [TomlPair]) -> [ConfigPair]
+    var out: [ConfigPair] = []
+    for p in pairs
+        list.push(out, cfgvalue.pair(p.key, toml_value(p.value)))
+    out
+
+// One TOML array's items, adapted.
+fn toml_items(items: [TomlValue]) -> [ConfigValue]
+    var out: [ConfigValue] = []
+    for v in items
+        list.push(out, toml_value(v))
+    out
+
+// One TOML value, adapted.  Total: a date-time reaches the tree as the
+// RFC 3339 spelling of itself.
+fn toml_value(v: TomlValue) -> ConfigValue
+    match v
+        TomlTable(pairs)              => cfgvalue.table(toml_pairs(pairs))
+        TomlArray(items)              => cfgvalue.list_of(toml_items(items))
+        TomlStr(s)                    => cfgvalue.str_value(s)
+        TomlInt(n)                    => cfgvalue.int_value(n)
+        TomlFloat(f)                  => cfgvalue.float_value(f)
+        TomlBool(b)                   => cfgvalue.bool_value(b)
+        TomlOffsetDateTime(when, off) => cfgvalue.str_value(iso8601.format_rfc3339(when, off))
+        TomlLocalDateTime(when)       => cfgvalue.str_value(iso8601.format_datetime(when))
+        TomlLocalDate(day)            => cfgvalue.str_value(iso8601.format_date(day))
+        TomlLocalTime(at)             => cfgvalue.str_value(iso8601.format_time(at))
 
 // A `TomlValue` as a `ConfigValue`.
 //
@@ -52,7 +100,41 @@ use std.json
 //     cfgvalue.kind_name(cfgvalue.kind_of(cfgadapt.from_toml(v)))
 // ```
 pub fn from_toml(v: TomlValue) -> ConfigValue
-    todo("config-nv.cfgadapt.from_toml")
+    toml_value(v)
+
+// A YAML mapping key as the name a dotted path is written with, or
+// `None` for a key that is a collection — the one shape a path cannot
+// name.
+fn yaml_key(key: YamlValue) -> ?Str
+    match yaml_value(key)
+        Ok(value) => cfgvalue.scalar_text(value)
+        Err(_)    => None
+
+// One YAML node, adapted, or the kind of a key that has no reading.
+//
+// The error is the kind's own name — `"seq"`, `"map"` — rather than a
+// sentence, because only the caller knows the path this document came
+// from.
+fn yaml_value(v: YamlValue) -> Result<ConfigValue, Str>
+    match v
+        YamlMap(pairs) =>
+            var out: [ConfigPair] = []
+            for p in pairs
+                match yaml_key(p.key)
+                    Some(name) => list.push(out, cfgvalue.pair(name, yaml_value(p.value)!))
+                    None       =>
+                        return Err(yamlnode.kind_name(p.key))
+            Ok(cfgvalue.table(out))
+        YamlSeq(items) =>
+            var out: [ConfigValue] = []
+            for it in items
+                list.push(out, yaml_value(it)!)
+            Ok(cfgvalue.list_of(out))
+        YamlStr(s)     => Ok(cfgvalue.str_value(s))
+        YamlInt(n)     => Ok(cfgvalue.int_value(n))
+        YamlFloat(f)   => Ok(cfgvalue.float_value(f))
+        YamlBool(b)    => Ok(cfgvalue.bool_value(b))
+        YamlNull       => Ok(cfgvalue.null_value())
 
 // A yaml-nv document as a `ConfigValue`, or the reason it has no
 // reading.
@@ -71,7 +153,54 @@ pub fn from_toml(v: TomlValue) -> ConfigValue
 //         Err(_) => "a collection was used as a key"
 // ```
 pub fn from_yaml(v: YamlValue) -> Result<ConfigValue, ConfigReadFault>
-    todo("config-nv.cfgadapt.from_yaml")
+    match yaml_value(v)
+        Ok(root)  => Ok(root)
+        Err(kind) => Err(ReadUnusableShape("", "a ${kind} was used as a mapping key"))
+
+// A JSON object's members, adapted, in the document's own key order.
+fn json_pairs(handle: JsonValueH) -> [ConfigPair]
+    var out: [ConfigPair] = []
+    for k in json.keys(handle)
+        match json.get(handle, k)
+            Some(child) => list.push(out, cfgvalue.pair(k, json_value(child)))
+            // cov: skip — json.keys listed this key; json.get cannot miss it
+            None        => list.push(out, cfgvalue.pair(k, cfgvalue.null_value()))
+    out
+
+// A JSON array's elements, adapted.
+fn json_items(handle: JsonValueH) -> [ConfigValue]
+    var out: [ConfigValue] = []
+    match json.to_list(handle)
+        Some(items) =>
+            for it in items
+                list.push(out, json_value(it))
+        // cov: skip — json.to_list cannot refuse a handle type_of called an array
+        None        => ()
+    out
+
+// A JSON number as an integer or a double.
+//
+// `json.to_int` is not the test: it truncates, so it answers `1` for
+// both `1.0` and `1.5`.  The parser's own spelling of the number is
+// the test, and `str.to_int` accepts exactly a whole 64-bit literal.
+fn json_number(handle: JsonValueH) -> ConfigValue
+    match str.to_int(json.stringify(handle))
+        Some(n) => cfgvalue.int_value(n)
+        None    =>
+            match json.to_float(handle)
+                Some(f) => cfgvalue.float_value(f)
+                // cov: skip — json.to_float answers Some for every number: 1e999 as inf
+                None    => cfgvalue.null_value()
+
+// One `std.json` handle, adapted by its kind.
+fn json_value(handle: JsonValueH) -> ConfigValue
+    match json.type_of(handle)
+        "object"  => cfgvalue.table(json_pairs(handle))
+        "array"   => cfgvalue.list_of(json_items(handle))
+        "boolean" => cfgvalue.bool_value(json.to_bool(handle) ?? false)
+        "number"  => json_number(handle)
+        "string"  => cfgvalue.str_value(json.to_str(handle) ?? "")
+        _         => cfgvalue.null_value()
 
 // A `std.json` value as a `ConfigValue`.
 //
@@ -90,7 +219,39 @@ pub fn from_yaml(v: YamlValue) -> Result<ConfigValue, ConfigReadFault>
 //         None    => "not json"
 // ```
 pub fn from_json(v: JsonValueH) -> ConfigValue
-    todo("config-nv.cfgadapt.from_json")
+    json_value(v)
+
+// The last segment of a path: the text after the final `/`, which is
+// the only part an extension can be on.
+fn last_segment(path: Str) -> Str
+    let parts = str.split(path, "/")
+    parts[list.len(parts) - 1]
+
+// A path's extension, lowercased, or `""` when it has none.
+//
+// No extension for a dotfile — `.env` is a name, not a suffix — and
+// none for a name with no dot in it at all.  The last dot wins, so
+// `app.tar.toml` is a TOML file.  Only the final segment is read: a
+// directory called `v1.2` is not an extension of anything inside it.
+//
+// Exported because the reader refuses an unrecognised file by naming
+// the extension it did not recognise, and two answers to "what is
+// this path's extension" that could drift apart is one too many.
+//
+// ```novo
+// use cfgadapt
+//
+// fn main() [io]
+//     println(cfgadapt.extension_of("/etc/Config.TOML"))    // toml
+// ```
+pub fn extension_of(path: Str) -> Str
+    let seg = last_segment(path)
+    if str.starts_with(seg, ".")
+        return ""
+    let parts = str.split(seg, ".")
+    if list.len(parts) < 2
+        return ""
+    str.lower(parts[list.len(parts) - 1])
 
 // Which format a path's extension names.
 //
@@ -112,7 +273,14 @@ pub fn from_json(v: JsonValueH) -> ConfigValue
 //         None    => println("no format for that name")
 // ```
 pub fn format_of(path: Str) -> ?ConfigFormat
-    todo("config-nv.cfgadapt.format_of")
+    let ext = extension_of(path)
+    if ext == "toml"
+        return Some(FormatToml)
+    if ext == "yaml" or ext == "yml"
+        return Some(FormatYaml)
+    if ext == "json"
+        return Some(FormatJson)
+    None
 
 // The format's name: `"toml"`, `"yaml"`, `"json"`.
 //
@@ -123,7 +291,52 @@ pub fn format_of(path: Str) -> ?ConfigFormat
 //     println(cfgadapt.format_name(FormatToml))
 // ```
 pub fn format_name(f: ConfigFormat) -> Str
-    todo("config-nv.cfgadapt.format_name")
+    match f
+        FormatToml => "toml"
+        FormatYaml => "yaml"
+        FormatJson => "json"
+
+// A parsed document's root, or the reason a layer cannot be built
+// from it.
+//
+// A layer's root has to be a table: a document whose root is a scalar
+// or a sequence names no key a dotted path could reach, and the merge
+// would drop it without a word.
+fn table_root(root: ConfigValue, origin: Str) -> Result<ConfigValue, ConfigReadFault>
+    if cfgvalue.is_table(root)
+        return Ok(root)
+    Err(ReadUnusableShape(origin,
+        "the root is a ${cfgvalue.kind_name(cfgvalue.kind_of(root))}, not a table"))
+
+// An adapter's fault, which names no path, given the one the text came
+// from.
+fn at_path(fault: ConfigReadFault, origin: Str) -> ConfigReadFault
+    // cov: skip — yaml-nv refuses a collection key at the parse, so no parsed tree reaches it
+    match fault
+        ReadUnusableShape(_, why) => ReadUnusableShape(origin, why)
+        other                     => other
+
+// yaml-nv's refusal, as this package's fault.
+//
+// ONE ARM IS TRANSLATED, and it is the one this module's header calls
+// a shape refusal: `ComplexKey`.  A mapping key that is a collection
+// is not a syntax error — the document parsed, and what it holds is a
+// key no dotted path can name — so it arrives as `ReadUnusableShape`,
+// the same arm `from_yaml` raises when the tree was built by hand.
+// yaml-nv refuses it before this adapter ever sees the tree, which is
+// why the translation is here rather than in `yaml_value`.  The
+// parser's line and column are carried inside the sentence, because
+// `ReadUnusableShape` has no field for them.
+//
+// Every other refusal is the parser's own, unrewritten, with its own
+// position and its own words.
+fn yaml_fault(e: YamlError, origin: Str) -> ConfigReadFault
+    match e
+        ComplexKey(line, col) =>
+            ReadUnusableShape(origin,
+                "a mapping key that is a collection at line ${line} column ${col}")
+        _                     =>
+            ReadParseFailed(origin, yamlerror.line_of(e), yamlerror.col_of(e), e.message())
 
 // Parse text in a named format straight into a `ConfigValue`.
 //
@@ -142,4 +355,23 @@ pub fn format_name(f: ConfigFormat) -> Str
 //         Err(_) => "did not parse"
 // ```
 pub fn parse_text(f: ConfigFormat, text: Str, origin: Str) -> Result<ConfigValue, ConfigReadFault>
-    todo("config-nv.cfgadapt.parse_text")
+    match f
+        FormatToml =>
+            match tomlread.parse(text)
+                Err(e)   => Err(ReadParseFailed(origin, tomlerror.line_of(e),
+                                                tomlerror.col_of(e), e.message()))
+                Ok(tree) => table_root(from_toml(tree), origin)
+        FormatYaml =>
+            match yamlread.parse(text, yamlsafe.standard())
+                Err(e)   => Err(yaml_fault(e, origin))
+                Ok(tree) =>
+                    match from_yaml(tree)
+                        // cov: skip — yamlread.parse refuses a collection key before from_yaml can
+                        Err(fault) => Err(at_path(fault, origin))
+                        Ok(root)   => table_root(root, origin)
+        FormatJson =>
+            // `std.json` reports no position, so a JSON parse failure
+            // carries `-1`, which is this package's "no line".
+            match json.parse(text)
+                None         => Err(ReadParseFailed(origin, -1, -1, "not JSON"))
+                Some(handle) => table_root(from_json(handle), origin)

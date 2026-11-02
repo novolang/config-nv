@@ -1,0 +1,4 @@
+server:
+  port: 8081
+  name: from yaml
+1: a non-string scalar key

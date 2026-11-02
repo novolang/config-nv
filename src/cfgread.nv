@@ -18,6 +18,48 @@
 // `cfgstack` is where an order is declared, and it is declared by the
 // program.
 
+use std.fs
+use std.list
+use cfgadapt
+use cfglayer
+use cfgsource
+
+// The format a path's extension names, or the refusal that names it.
+fn format_for(path: Str) -> Result<ConfigFormat, ConfigReadFault>
+    match cfgadapt.format_of(path)
+        Some(f) => Ok(f)
+        None    => Err(ReadUnknownExtension(path, cfgadapt.extension_of(path)))
+
+// The text of a file that is there, or the reason there is none.
+//
+// Three answers, not one.  Missing is ordinary and is what
+// `optional_layer` is for; a path that is not a regular file never had
+// bytes to give; and a file that cannot be opened is a permission
+// problem, which a program should hear about rather than skip.
+//
+// Exported because the bytes themselves are sometimes the answer — a
+// program that hashes a file to notice a reload, or hands a `.env` to
+// `cfgdotenv` — and this is the one place the three-way rule above is
+// written.  `cfgdotenv.read_dotenv` is the second caller inside the
+// package.
+//
+// ```novo
+// use cfgread
+//
+// fn main() [fs, io]
+//     match cfgread.read_text("/etc/app.toml")
+//         Ok(text) => println(text)
+//         Err(e)   => println(e.message())
+// ```
+pub fn read_text(path: Str) -> Result<Str, ConfigReadFault> [fs]
+    if not fs.exists(path)
+        return Err(ReadNoSuchFile(path))
+    if not fs.is_file(path)
+        return Err(ReadNotText(path))
+    match fs.read(path)
+        Some(text) => Ok(text)
+        None       => Err(ReadDenied(path))
+
 // A layer from one file, or the reason there is none.
 //
 // The extension decides the parser: `.toml`, `.yaml`, `.yml`,
@@ -32,7 +74,8 @@
 //     cfgread.file_layer("/etc/app.toml", 10)
 // ```
 pub fn file_layer(path: Str, rank: Int) -> Result<ConfigLayer, ConfigReadFault> [fs]
-    todo("config-nv.cfgread.file_layer")
+    let f = format_for(path)!
+    file_layer_as(f, path, rank)
 
 // The same, with a file that is not there reported as `None` rather
 // than as a refusal.
@@ -49,7 +92,10 @@ pub fn file_layer(path: Str, rank: Int) -> Result<ConfigLayer, ConfigReadFault> 
 //     cfgread.optional_layer("~/.config/app.toml", 20)
 // ```
 pub fn optional_layer(path: Str, rank: Int) -> Result<?ConfigLayer, ConfigReadFault> [fs]
-    todo("config-nv.cfgread.optional_layer")
+    if not fs.exists(path)
+        return Ok(None)
+    let l = file_layer(path, rank)!
+    Ok(Some(l))
 
 // A layer from a file whose format the caller names.
 //
@@ -64,7 +110,9 @@ pub fn optional_layer(path: Str, rank: Int) -> Result<?ConfigLayer, ConfigReadFa
 // ```
 pub fn file_layer_as(f: ConfigFormat, path: Str,
                      rank: Int) -> Result<ConfigLayer, ConfigReadFault> [fs]
-    todo("config-nv.cfgread.file_layer_as")
+    let text = read_text(path)!
+    let root = cfgadapt.parse_text(f, text, path)!
+    Ok(cfglayer.layer(path, rank, root))
 
 // Every file in a list that is there, as layers, in list order with
 // ascending ranks from `first_rank`.
@@ -86,7 +134,14 @@ pub fn file_layer_as(f: ConfigFormat, path: Str,
 //     cfgread.file_layers(["/etc/app.toml", "app.toml"], 10)
 // ```
 pub fn file_layers(paths: [Str], first_rank: Int) -> Result<[ConfigLayer], ConfigReadFault> [fs]
-    todo("config-nv.cfgread.file_layers")
+    var out: [ConfigLayer] = []
+    var rank = first_rank
+    for p in paths
+        if readable(p)
+            let l = file_layer(p, rank)!
+            list.push(out, l)
+            rank = rank + 1
+    Ok(out)
 
 // Whether a path exists and can be read.
 //
@@ -103,7 +158,7 @@ pub fn file_layers(paths: [Str], first_rank: Int) -> Result<[ConfigLayer], Confi
 //         println("found /etc/app.toml")
 // ```
 pub fn readable(path: Str) -> Bool [fs]
-    todo("config-nv.cfgread.readable")
+    fs.exists(path) and fs.is_file(path)
 
 // The first path in a list that exists, or `None`.
 //
@@ -120,4 +175,7 @@ pub fn readable(path: Str) -> Bool [fs]
 //         None    => println("no configuration file")
 // ```
 pub fn first_existing(paths: [Str]) -> ?Str [fs]
-    todo("config-nv.cfgread.first_existing")
+    for p in paths
+        if readable(p)
+            return Some(p)
+    None

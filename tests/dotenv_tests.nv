@@ -1,15 +1,16 @@
 // dotenv_tests.nv — the API suite for the `.env` grammar and the
-// format adapters, with no file anywhere in it.
+// format adapters.  The grammar cases are fixture strings rather than
+// files.
 //
-// RED ON PURPOSE: every body is a `todo()`.  Run with `--isolate` for
-// one verdict per `@test`.
+// Run with `--isolate` for one verdict per `@test`.
 //
 // WHY THESE CASES TAKE TEXT AND NOT A PATH.  `parse_dotenv` declares
 // no effects, so the grammar is testable against a fixture string —
 // which is the same reason `config-core-nv`'s environment mapping
-// takes pairs.  The two cases that DO name a path are here to pin the
-// effect rows, and they reach `not implemented` before they open
-// anything.
+// takes pairs.  The cases that DO name a path are here to pin the
+// effect rows: an absent path answers a fault or `None`, and the one
+// case that needs a file this repository cannot carry is the one
+// named in the CHANGELOG's `### Known`.
 
 use std.test
 use std.list
@@ -115,11 +116,11 @@ fn test_render_is_the_parsers_inverse() [io]
 @test
 fn test_a_dotenv_becomes_a_layer_and_not_the_environment() [io, fs]
     test.case("the layer carries the name and rank it was given")
-    match cfgdotenv.dotenv_layer(cfgenvkeys.rule("APP_"), ".env", ".env", 20)
+    match cfgdotenv.dotenv_layer(cfgenvkeys.rule("APP_"), "tests/fixtures/.env", ".env", 20)
         Ok(l)  =>
             test.assert(l.name == ".env")
             test.assert(l.rank == 20)
-        Err(_) => test.fail("this case reaches not implemented before the file")
+        Err(_) => test.fail("the fixture .env is a file the layer reads")
 
     test.case("an absent file is None, not a refusal")
     match cfgdotenv.optional_dotenv_layer(cfgenvkeys.rule("APP_"), ".env", ".env", 20)
@@ -260,4 +261,4 @@ fn test_a_value_fault_travels_across_unrewritten() [io]
 
     test.case("only a missing file counts as absent")
     test.assert(cfgsource.is_absent(ReadNoSuchFile("/etc/app.toml")))
-    test.assert(cfgsource.is_absent(ReadDenied("/etc/shadow")) == false)
+    test.assert(not cfgsource.is_absent(ReadDenied("/etc/shadow")))

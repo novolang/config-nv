@@ -1,16 +1,17 @@
 // stack_tests.nv — the API suite for the builder, the file reader and
 // the environment reader.
 //
-// RED ON PURPOSE: every body is a `todo()`.  Run with `--isolate` for
-// one verdict per `@test`.
+// Run with `--isolate` for one verdict per `@test`.
 //
-// WHAT THESE CASES PIN.  Not what a file contains — nothing reads one
-// yet — but the two things that are decisions rather than arithmetic:
-// **the order of the standard stack**, which is what makes one
-// program's precedence the same as another's, and **the effect rows**,
-// which are three different answers to "what did this push have to
-// touch".  A push that reads nothing declares nothing, and the
-// signatures below are where that is checked.
+// WHAT THESE CASES PIN.  Not what a file contains — the cases that
+// name one name a path that is not on this machine, so they pin the
+// fault and the effect row rather than a reading — but the two things
+// that are decisions rather than arithmetic: **the order of the
+// standard stack**, which is what makes one program's precedence the
+// same as another's, and **the effect rows**, which are three
+// different answers to "what did this push have to touch".  A push
+// that reads nothing declares nothing, and the signatures below are
+// where that is checked.
 
 use std.test
 use std.list
@@ -122,9 +123,9 @@ fn test_the_environment_is_read_by_name_because_it_cannot_be_listed() [io]
 @test
 fn test_a_file_push_is_fs_and_only_fs() [io, fs]
     test.case("a named file")
-    match cfgstack.with_file(cfgstack.empty(), "/etc/app.toml")
+    match cfgstack.with_file(cfgstack.empty(), "tests/fixtures/app.toml")
         Ok(s)  => test.assert(cfgstack.depth(s) == 1)
-        Err(_) => test.fail("this case reaches not implemented before the file")
+        Err(_) => test.fail("the fixture app.toml is a file the stack reads")
 
     test.case("an absent optional file leaves the stack as it was")
     match cfgstack.with_optional_file(cfgstack.empty(), "/nonexistent/app.toml")
@@ -149,7 +150,7 @@ fn test_a_missing_file_and_an_unreadable_one_are_different_answers() [io, fs]
 @test
 fn test_the_reader_answers_before_it_parses() [io, fs]
     test.case("readable does not load the file")
-    test.assert(cfgread.readable("/nonexistent/app.toml") == false)
+    test.assert(not cfgread.readable("/nonexistent/app.toml"))
 
     test.case("first_existing is take-the-first, not take-them-all")
     match cfgread.first_existing(["/nonexistent/a.toml", "/nonexistent/b.toml"])

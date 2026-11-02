@@ -29,6 +29,15 @@
 // carry a row.  That is what lets a test build a whole configuration
 // from fixtures inside a pure function.
 
+use std.list
+use cfglayer
+use cfgmerge
+use cfgdotenv
+use cfgenviron
+use cfgenvkeys
+use cfgread
+use cfgsource
+
 // Sources in the order they were declared, with the ranks assigned.
 //
 // ```novo
@@ -53,7 +62,8 @@ pub struct ConfigStack
 //     println("${cfgstack.depth(cfgstack.empty())}")
 // ```
 pub fn empty() -> ConfigStack
-    todo("config-nv.cfgstack.empty")
+    let none: [ConfigLayer] = []
+    ConfigStack { layers: none, next_rank: 0 }
 
 // How many layers a stack holds.
 //
@@ -64,7 +74,28 @@ pub fn empty() -> ConfigStack
 //     println("${cfgstack.depth(cfgstack.empty())}")
 // ```
 pub fn depth(s: ConfigStack) -> Int
-    todo("config-nv.cfgstack.depth")
+    list.len(s.layers)
+
+// The stack with these layers appended as they are, and the next rank
+// moved past every one of them.
+//
+// The layer list is copied first: `list.push` writes into the list it
+// is given, and a push that wrote into `s.layers` would change the
+// stack the caller still holds.
+fn with_all(s: ConfigStack, ls: [ConfigLayer]) -> ConfigStack
+    var layers = list.clone(s.layers)
+    var next = s.next_rank
+    for l in ls
+        list.push(layers, l)
+        if l.rank >= next
+            next = l.rank + 10
+    ConfigStack { layers: layers, next_rank: next }
+
+// The stack with one layer appended, if there is one.
+fn with_optional(s: ConfigStack, l: ?ConfigLayer) -> ConfigStack
+    match l
+        Some(layer) => with_all(s, [layer])
+        None        => s
 
 // Push a layer a caller built themselves, at the stack's next rank.
 //
@@ -83,7 +114,7 @@ pub fn depth(s: ConfigStack) -> Int
 //     println("${cfgstack.depth(cfgstack.with_layer(cfgstack.empty(), l))}")
 // ```
 pub fn with_layer(s: ConfigStack, l: ConfigLayer) -> ConfigStack
-    todo("config-nv.cfgstack.with_layer")
+    with_all(s, [cfglayer.reranked(l, s.next_rank)])
 
 // Push the defaults a program compiled into itself.
 //
@@ -100,7 +131,7 @@ pub fn with_layer(s: ConfigStack, l: ConfigLayer) -> ConfigStack
 //     println("${cfgstack.depth(s)}")
 // ```
 pub fn with_defaults(s: ConfigStack, root: ConfigValue) -> ConfigStack
-    todo("config-nv.cfgstack.with_defaults")
+    with_all(s, [cfglayer.layer("defaults", s.next_rank, root)])
 
 // Push a file, refusing if it is not there.
 //
@@ -111,7 +142,8 @@ pub fn with_defaults(s: ConfigStack, root: ConfigValue) -> ConfigStack
 //     cfgstack.with_file(cfgstack.empty(), "/etc/app.toml")
 // ```
 pub fn with_file(s: ConfigStack, path: Str) -> Result<ConfigStack, ConfigReadFault> [fs]
-    todo("config-nv.cfgstack.with_file")
+    let l = cfgread.file_layer(path, s.next_rank)!
+    Ok(with_all(s, [l]))
 
 // Push a file if it is there, and carry on if it is not.
 //
@@ -125,7 +157,8 @@ pub fn with_file(s: ConfigStack, path: Str) -> Result<ConfigStack, ConfigReadFau
 //     cfgstack.with_optional_file(cfgstack.empty(), "~/.config/app.toml")
 // ```
 pub fn with_optional_file(s: ConfigStack, path: Str) -> Result<ConfigStack, ConfigReadFault> [fs]
-    todo("config-nv.cfgstack.with_optional_file")
+    let l = cfgread.optional_layer(path, s.next_rank)!
+    Ok(with_optional(s, l))
 
 // Push every file in a list that is there, in list order.
 //
@@ -136,7 +169,8 @@ pub fn with_optional_file(s: ConfigStack, path: Str) -> Result<ConfigStack, Conf
 //     cfgstack.with_files(cfgstack.empty(), ["/etc/app.toml", "app.toml"])
 // ```
 pub fn with_files(s: ConfigStack, paths: [Str]) -> Result<ConfigStack, ConfigReadFault> [fs]
-    todo("config-nv.cfgstack.with_files")
+    let ls = cfgread.file_layers(paths, s.next_rank)!
+    Ok(with_all(s, ls))
 
 // Push a `.env` file if it is there.
 //
@@ -149,7 +183,8 @@ pub fn with_files(s: ConfigStack, paths: [Str]) -> Result<ConfigStack, ConfigRea
 // ```
 pub fn with_dotenv(s: ConfigStack, r: EnvKeyRule,
                    path: Str) -> Result<ConfigStack, ConfigReadFault> [fs]
-    todo("config-nv.cfgstack.with_dotenv")
+    let l = cfgdotenv.optional_dotenv_layer(r, path, path, s.next_rank)!
+    Ok(with_optional(s, l))
 
 // Push the process environment, for the paths a program declares.
 //
@@ -167,7 +202,7 @@ pub fn with_dotenv(s: ConfigStack, r: EnvKeyRule,
 //                               ["server.port", "debug"])
 // ```
 pub fn with_environment(s: ConfigStack, r: EnvKeyRule, paths: [Str]) -> ConfigStack [io]
-    todo("config-nv.cfgstack.with_environment")
+    with_all(s, [cfgenviron.env_layer(r, paths, "${r.prefix} environment", s.next_rank)])
 
 // Push command-line overrides, as `(path, value)` pairs.
 //
@@ -188,7 +223,7 @@ pub fn with_environment(s: ConfigStack, r: EnvKeyRule, paths: [Str]) -> ConfigSt
 //     println("${cfgstack.depth(s)}")
 // ```
 pub fn with_overrides(s: ConfigStack, pairs: [(Str, Str)]) -> ConfigStack
-    todo("config-nv.cfgstack.with_overrides")
+    with_all(s, [cfgenvkeys.layer_from_paths(pairs, "--set", s.next_rank)])
 
 // The overrides `with_overrides` could not use, with the fault for
 // each.
@@ -201,7 +236,7 @@ pub fn with_overrides(s: ConfigStack, pairs: [(Str, Str)]) -> ConfigStack
 //     println("${list.len(cfgstack.bad_overrides([("a..b", "1")]))}")
 // ```
 pub fn bad_overrides(pairs: [(Str, Str)]) -> [ConfigFault]
-    todo("config-nv.cfgstack.bad_overrides")
+    cfgenvkeys.bad_paths(pairs)
 
 // **Merge the stack.**
 //
@@ -217,7 +252,7 @@ pub fn bad_overrides(pairs: [(Str, Str)]) -> [ConfigFault]
 //     cfglookup.get_int(cfgstack.build(s), "server.port")
 // ```
 pub fn build(s: ConfigStack) -> MergedConfig
-    todo("config-nv.cfgstack.build")
+    cfgmerge.merge_all(s.layers)
 
 // The layers a stack holds, in push order.
 //
@@ -232,7 +267,7 @@ pub fn build(s: ConfigStack) -> MergedConfig
 //     println("${list.len(cfgstack.sources(cfgstack.empty()))}")
 // ```
 pub fn sources(s: ConfigStack) -> [ConfigLayer]
-    todo("config-nv.cfgstack.sources")
+    list.clone(s.layers)
 
 // **The whole start-up sequence in one call**, in the order the
 // module header describes.
@@ -261,4 +296,16 @@ pub fn sources(s: ConfigStack) -> [ConfigLayer]
 // ```
 pub fn standard(defaults: ConfigValue, paths: [Str], r: EnvKeyRule, declared: [Str],
                 overrides: [(Str, Str)]) -> Result<ConfigStack, ConfigReadFault> [fs, io]
-    todo("config-nv.cfgstack.standard")
+    // The ranks are assigned here rather than inherited from whatever
+    // the pushes would have chosen, because the numbers in the header
+    // are the promise and a stack that moved them when the file list
+    // changed length would be a different promise.
+    let s0 = with_all(empty(), [cfglayer.layer("defaults", 0, defaults)])
+    let s1 = match cfgread.file_layers(paths, 10)
+        Err(e) =>
+            return Err(e)
+        Ok(ls) => with_all(s0, ls)
+    let dotenv = cfgdotenv.optional_dotenv_layer(r, ".env", ".env", 20)!
+    let s2 = with_optional(s1, dotenv)
+    let s3 = with_all(s2, [cfgenviron.env_layer(r, declared, "${r.prefix} environment", 30)])
+    Ok(with_all(s3, [cfgenvkeys.layer_from_paths(overrides, "--set", 40)]))

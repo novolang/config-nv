@@ -5,6 +5,10 @@
 // package has to pick:
 //
 //   NAME=value                     the whole of it
+//   NAME = value                   blanks around the `=` are ignored,
+//                                  which is the one place both
+//                                  reference implementations agree
+//                                  and say nothing about
 //   export NAME=value              `export ` is accepted and ignored
 //   NAME='value'                   single quotes: no escapes, no
 //                                  interpolation, newline permitted
@@ -40,6 +44,241 @@
 // `[io]`, because a `.env` is a file and this module never reads the
 // process environment.  A program that wants both stacks two layers.
 
+use std.fs
+use std.list
+use std.str
+use cfgread
+use cfgenvkeys
+use cfgsource
+
+// Whether a byte is a space or a tab.  The two the grammar calls
+// blanks; a newline is only ever a line's end or a quoted value's own
+// byte.
+fn is_blank(b: Int) -> Bool
+    b == 32 or b == 9
+
+// Whether a byte can appear inside a variable name: a letter, a digit
+// or an underscore.
+fn name_byte(b: Int) -> Bool
+    if b >= 65 and b <= 90
+        return true
+    if b >= 97 and b <= 122
+        return true
+    if b >= 48 and b <= 57
+        return true
+    b == 95
+
+// Whether a byte can START a name.  A digit cannot: `1A=2` is not a
+// binding, and reading it as one would put a name in a provenance
+// answer that no shell could have exported.
+fn name_start(b: Int) -> Bool
+    if b >= 65 and b <= 90
+        return true
+    if b >= 97 and b <= 122
+        return true
+    b == 95
+
+// The index of the first byte from `from` on that is not a name byte.
+fn name_end(s: Str, from: Int) -> Int
+    let n = str.len(s)
+    var i = from
+    while i < n
+        if not name_byte(str.byte_at_or(s, i, 0))
+            return i
+        i = i + 1
+    n
+
+// Where a comment starts at or after `from`, or the end of the text.
+//
+// A `#` outside quotes runs to end of line; this is the "outside
+// quotes" half, since the quoted forms consume their own body before
+// this is ever asked.
+fn comment_start(s: Str, from: Int) -> Int
+    match str.index_from(s, "#", from)
+        Some(i) => i
+        None    => str.len(s)
+
+// An unquoted value: the text from `at` to the first `#` or the end,
+// with trailing blanks removed.
+fn unquoted(rest: Str, at: Int) -> Str
+    str.trim_end(str.slice(rest, at, comment_start(rest, at)))
+
+// Whether nothing but blanks — then a comment or the end — follows.
+fn only_blanks_after(s: Str, from: Int) -> Bool
+    let n = str.len(s)
+    var i = from
+    while i < n and is_blank(str.byte_at_or(s, i, 0))
+        i = i + 1
+    if i >= n
+        return true
+    str.byte_at_or(s, i, 0) == 35
+
+// The index of the `"` that closes a body starting at `from`, or `None`
+// if the line ends first.
+//
+// A backslash hides the byte after it, so `\"` does not close and `\\`
+// does not hide the quote that follows it.
+fn close_double(s: Str, from: Int) -> ?Int
+    let n = str.len(s)
+    var i = from
+    while i < n
+        let b = str.byte_at_or(s, i, 0)
+        if b == 92
+            i = i + 2
+        elif b == 34
+            return Some(i)
+        else
+            i = i + 1
+    // cov: skip — parse_dotenv refuses an unclosed quote before a body is read
+    None
+
+// A double-quoted body with its escapes applied.
+//
+// `\n \r \t \\ \" \$` are the six the header names.  Any other
+// backslash keeps both bytes, so a path spelled with Windows
+// separators survives a round trip and a typo stays visible instead of
+// being eaten.
+fn decode_double(body: Str) -> Str
+    var out = ""
+    let n = str.len(body)
+    var i = 0
+    while i < n
+        let b = str.byte_at_or(body, i, 0)
+        if b == 92
+            let nxt = str.byte_at_or(body, i + 1, 0)
+            if nxt == 110
+                out = "${out}\n"
+            elif nxt == 114
+                out = "${out}\r"
+            elif nxt == 116
+                out = "${out}\t"
+            elif nxt == 92
+                out = "${out}\\"
+            elif nxt == 34
+                out = "${out}\""
+            elif nxt == 36
+                out = "${out}\$"
+            else
+                out = "${out}${str.from_byte(92)}${str.from_byte(nxt)}"
+            i = i + 2
+        else
+            out = "${out}${str.from_byte(b)}"
+            i = i + 1
+    out
+
+// The value of a single-quoted body: the text between the quotes, as
+// written, with no escape applied to it.
+fn single_quoted(rest: Str, at: Int) -> Result<Str, Str>
+    match str.index_from(rest, "'", at + 1)
+        // cov: skip — parse_dotenv refuses an unclosed quote before read_value runs
+        None    => Err("an unterminated quote")
+        Some(e) =>
+            if not only_blanks_after(rest, e + 1)
+                return Err("text after the closing quote")
+            Ok(str.slice(rest, at + 1, e))
+
+// The same for a double-quoted body, with the escapes applied.
+fn double_quoted(rest: Str, at: Int) -> Result<Str, Str>
+    match close_double(rest, at + 1)
+        // cov: skip — parse_dotenv refuses an unclosed quote before read_value runs
+        None    => Err("an unterminated quote")
+        Some(e) =>
+            if not only_blanks_after(rest, e + 1)
+                return Err("text after the closing quote")
+            Ok(decode_double(str.slice(rest, at + 1, e)))
+
+// The value of a pair, read from the text that follows its `=`.
+fn read_value(name: Str, rest: Str) -> Result<?(Str, Str), Str>
+    let n = str.len(rest)
+    var at = 0
+    while at < n and is_blank(str.byte_at_or(rest, at, 0))
+        at = at + 1
+    if at < n
+        let b = str.byte_at_or(rest, at, 0)
+        if b == 39
+            match single_quoted(rest, at)
+                Err(why) =>
+                    return Err(why)
+                Ok(v)    =>
+                    return Ok(Some((name, v)))
+        if b == 34
+            match double_quoted(rest, at)
+                Err(why) =>
+                    return Err(why)
+                Ok(v)    =>
+                    return Ok(Some((name, v)))
+    Ok(Some((name, unquoted(rest, at))))
+
+// Which quote a line leaves open at its end: `0` for none, `1` for a
+// single quote, `2` for a double quote.
+//
+// The whole of the multi-line rule: a logical line is a physical line
+// plus every following one, until this answers zero.  A `#` outside
+// quotes ends the line's interest, which is why a comment may hold an
+// unbalanced quote without opening anything.
+fn open_quote(line: Str) -> Int
+    let n = str.len(line)
+    var state = 0
+    var i = 0
+    while i < n
+        let b = str.byte_at_or(line, i, 0)
+        if state == 0
+            if b == 35
+                return 0
+            if b == 39
+                state = 1
+            elif b == 34
+                state = 2
+        elif state == 1
+            if b == 39
+                state = 0
+        else
+            if b == 92
+                i = i + 1
+            elif b == 34
+                state = 0
+        i = i + 1
+    state
+
+// One logical line's pair, `None` for a line that binds nothing, or
+// the reason the line is not a pair.
+//
+// The reason is the fault's `why` and names the rule it broke: `an
+// unterminated quote`, `a name that is not an identifier`, `a line
+// with no `=` in it`, `text after the closing quote`.
+fn parse_line(line: Str) -> Result<?(Str, Str), Str>
+    let text = str.trim_end(line)
+    let n = str.len(text)
+    var at = 0
+    while at < n and is_blank(str.byte_at_or(text, at, 0))
+        at = at + 1
+    if at >= n
+        return Ok(None)
+    if str.byte_at_or(text, at, 0) == 35
+        return Ok(None)
+    if n - at > 6 and str.slice(text, at, at + 6) == "export"
+        and is_blank(str.byte_at_or(text, at + 6, 0))
+        at = at + 6
+        while at < n and is_blank(str.byte_at_or(text, at, 0))
+            at = at + 1
+    if at >= n
+        // cov: skip — `str.trim_end` in parse_line leaves `export` itself, six bytes
+        return Err("a line with no `=` in it")
+    if not name_start(str.byte_at_or(text, at, 0))
+        return Err("a name that is not an identifier")
+    let stop = name_end(text, at)
+    let name = str.slice(text, at, stop)
+    if stop < n
+        let after = str.byte_at_or(text, stop, 0)
+        if after != 61 and not is_blank(after)
+            return Err("a name that is not an identifier")
+    at = stop
+    while at < n and is_blank(str.byte_at_or(text, at, 0))
+        at = at + 1
+    if at >= n or str.byte_at_or(text, at, 0) != 61
+        return Err("a line with no `=` in it")
+    read_value(name, str.slice(text, at + 1, n))
+
 // The pairs a `.env` text holds, in file order.
 //
 // **No effects**: this is the grammar and nothing else, which is what
@@ -57,7 +296,27 @@
 //         Err(_) => 0 - 1
 // ```
 pub fn parse_dotenv(text: Str, origin: Str) -> Result<[(Str, Str)], ConfigReadFault>
-    todo("config-nv.cfgdotenv.parse_dotenv")
+    let lines = str.split_lines(text)
+    let n = list.len(lines)
+    var out: [(Str, Str)] = []
+    var i = 0
+    while i < n
+        let start = i
+        var logical = lines[i]
+        while open_quote(logical) != 0 and i + 1 < n
+            i = i + 1
+            logical = "${logical}\n${lines[i]}"
+        if open_quote(logical) != 0
+            return Err(ReadBadEnvLine(origin, start + 1, "an unterminated quote"))
+        match parse_line(logical)
+            Err(why) =>
+                return Err(ReadBadEnvLine(origin, start + 1, why))
+            Ok(pair) =>
+                match pair
+                    Some(kv) => list.push(out, kv)
+                    None     => ()
+        i = i + 1
+    Ok(out)
 
 // **A layer from a `.env` file.**
 //
@@ -76,12 +335,16 @@ pub fn parse_dotenv(text: Str, origin: Str) -> Result<[(Str, Str)], ConfigReadFa
 // ```
 pub fn dotenv_layer(r: EnvKeyRule, path: Str, name: Str,
                     rank: Int) -> Result<ConfigLayer, ConfigReadFault> [fs]
-    todo("config-nv.cfgdotenv.dotenv_layer")
+    let pairs = read_dotenv(path)!
+    Ok(cfgenvkeys.layer_from(r, pairs, name, rank))
 
 // The same, with a file that is not there reported as `None`.
 //
 // A `.env` is absent in production far more often than it is present,
-// so this is the call most programs make.
+// so this is the call most programs make.  Every other reason still
+// refuses, which is `cfgread.optional_layer`'s asymmetry and is
+// deliberate for the same reason: a `.env` that exists and will not
+// parse is a mistake, and one that is not there is Tuesday.
 //
 // ```novo
 // use cfgdotenv
@@ -92,7 +355,10 @@ pub fn dotenv_layer(r: EnvKeyRule, path: Str, name: Str,
 // ```
 pub fn optional_dotenv_layer(r: EnvKeyRule, path: Str, name: Str,
                              rank: Int) -> Result<?ConfigLayer, ConfigReadFault> [fs]
-    todo("config-nv.cfgdotenv.optional_dotenv_layer")
+    if not fs.exists(path)
+        return Ok(None)
+    let l = dotenv_layer(r, path, name, rank)!
+    Ok(Some(l))
 
 // The pairs a `.env` file holds, without building a layer.
 //
@@ -107,7 +373,67 @@ pub fn optional_dotenv_layer(r: EnvKeyRule, path: Str, name: Str,
 //     cfgdotenv.read_dotenv(".env")
 // ```
 pub fn read_dotenv(path: Str) -> Result<[(Str, Str)], ConfigReadFault> [fs]
-    todo("config-nv.cfgdotenv.read_dotenv")
+    let text = cfgread.read_text(path)!
+    parse_dotenv(text, path)
+
+// Whether a value has to be quoted to come back unchanged.
+//
+// A blank, a newline, a `#` that would start a comment, a quote that
+// would open one, or a backslash that would be read as an escape.  A
+// `$` is NOT in the set: this package does not interpolate, so `$`
+// round-trips as itself and quoting it would be a claim about some
+// other reader.
+fn needs_quotes(v: Str) -> Bool
+    let n = str.len(v)
+    var i = 0
+    while i < n
+        let b = str.byte_at_or(v, i, 0)
+        if b == 32 or b == 9 or b == 10 or b == 13
+            return true
+        if b == 35 or b == 39 or b == 34 or b == 92
+            return true
+        i = i + 1
+    false
+
+// A value with the escapes the double-quoted form applies, run
+// backwards.
+//
+// `bs` and `dq` name the two characters every escape here is built
+// from.  Writing the backslash out as itself in each branch would be
+// a one-character slip away from appending the byte that was meant to
+// be escaped rather than the escape — which is what this function did
+// until a test caught it.
+fn escape_double(v: Str) -> Str
+    let bs = "\\"
+    let dq = "\""
+    var out = ""
+    let n = str.len(v)
+    var i = 0
+    while i < n
+        let b = str.byte_at_or(v, i, 0)
+        if b == 10
+            out = "${out}${bs}n"
+        elif b == 13
+            out = "${out}${bs}r"
+        elif b == 9
+            out = "${out}${bs}t"
+        elif b == 92
+            out = "${out}${bs}${bs}"
+        elif b == 34
+            out = "${out}${bs}${dq}"
+        elif b == 36
+            out = "${out}${bs}\$"
+        else
+            out = "${out}${str.from_byte(b)}"
+        i = i + 1
+    out
+
+// One pair's right-hand side: quoted and escaped when it needs it, as
+// written otherwise.
+fn render_value(v: Str) -> Str
+    if needs_quotes(v)
+        return "\"${escape_double(v)}\""
+    v
 
 // Render pairs back as `.env` text.
 //
@@ -124,4 +450,7 @@ pub fn read_dotenv(path: Str) -> Result<[(Str, Str)], ConfigReadFault> [fs]
 //     println(cfgdotenv.render_dotenv([("APP_DEBUG", "true")]))
 // ```
 pub fn render_dotenv(pairs: [(Str, Str)]) -> Str
-    todo("config-nv.cfgdotenv.render_dotenv")
+    var out = ""
+    for p in pairs
+        out = "${out}${p.0}=${render_value(p.1)}\n"
+    out

@@ -67,9 +67,16 @@ pub enum ConfigReadFault
 // nothing catches it.  It is the last resort, not the interface: a
 // program that wants to point at a line reads the arm's fields.
 impl Error for ConfigReadFault
-    // Panics with `not implemented` until the bodies land.
     fn message(self) -> Str
-        todo("config-nv.ConfigReadFault.message")
+        match self
+            ReadNoSuchFile(path)                  => "no such file: ${path}"
+            ReadDenied(path)                      => "denied: ${path}"
+            ReadUnknownExtension(path, ext)       => "unknown extension .${ext}: ${path}"
+            ReadParseFailed(path, line, col, why) => "${path}:${line}:${col}: ${why}"
+            ReadNotText(path)                     => "not text: ${path}"
+            ReadBadEnvLine(path, line, why)       => "${path}:${line}: bad .env line: ${why}"
+            ReadUnusableShape(path, why)          => "unusable shape: ${path}: ${why}"
+            ReadValueFault(fault)                 => fault.message()
 
 // The path a fault is about.
 //
@@ -84,7 +91,15 @@ impl Error for ConfigReadFault
 //     println(cfgsource.read_fault_path(ReadDenied("/etc/shadow")))
 // ```
 pub fn read_fault_path(f: ConfigReadFault) -> Str
-    todo("config-nv.cfgsource.read_fault_path")
+    match f
+        ReadValueFault(_)              => ""
+        ReadNoSuchFile(path)           => path
+        ReadDenied(path)               => path
+        ReadUnknownExtension(path, _)  => path
+        ReadParseFailed(path, _, _, _) => path
+        ReadNotText(path)              => path
+        ReadBadEnvLine(path, _, _)     => path
+        ReadUnusableShape(path, _)     => path
 
 // A short name for which refusal this is, for a program that groups or
 // counts them.
@@ -101,7 +116,15 @@ pub fn read_fault_path(f: ConfigReadFault) -> Str
 //     println(cfgsource.read_fault_kind(ReadNoSuchFile("/etc/app.toml")))
 // ```
 pub fn read_fault_kind(f: ConfigReadFault) -> Str
-    todo("config-nv.cfgsource.read_fault_kind")
+    match f
+        ReadNoSuchFile(_)           => "no such file"
+        ReadDenied(_)               => "denied"
+        ReadUnknownExtension(_, _)  => "unknown extension"
+        ReadParseFailed(_, _, _, _) => "parse failed"
+        ReadNotText(_)              => "not text"
+        ReadBadEnvLine(_, _, _)     => "bad env line"
+        ReadUnusableShape(_, _)     => "unusable shape"
+        ReadValueFault(_)           => "value"
 
 // The line a fault is about, or `-1` when it is not about a line.
 //
@@ -112,7 +135,10 @@ pub fn read_fault_kind(f: ConfigReadFault) -> Str
 //     println("${cfgsource.read_fault_line(ReadDenied("/etc/shadow"))}")
 // ```
 pub fn read_fault_line(f: ConfigReadFault) -> Int
-    todo("config-nv.cfgsource.read_fault_line")
+    match f
+        ReadParseFailed(_, line, _, _) => line
+        ReadBadEnvLine(_, line, _)     => line
+        _                              => -1
 
 // The config-core-nv refusal inside a `ReadValueFault`, if that is
 // what this is.
@@ -130,7 +156,9 @@ pub fn read_fault_line(f: ConfigReadFault) -> Int
 //         None    => println("that fault is about a file")
 // ```
 pub fn value_fault(f: ConfigReadFault) -> ?ConfigFault
-    todo("config-nv.cfgsource.value_fault")
+    match f
+        ReadValueFault(fault) => Some(fault)
+        _                     => None
 
 // Whether a fault means "this source was simply not there".
 //
@@ -146,4 +174,6 @@ pub fn value_fault(f: ConfigReadFault) -> ?ConfigFault
 //     println("${cfgsource.is_absent(ReadNoSuchFile("/etc/app.toml"))}")
 // ```
 pub fn is_absent(f: ConfigReadFault) -> Bool
-    todo("config-nv.cfgsource.is_absent")
+    match f
+        ReadNoSuchFile(_) => true
+        _                 => false

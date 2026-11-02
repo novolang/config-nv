@@ -1,0 +1,515 @@
+// machine_edges_tests.nv — the half that touches the machine, against
+// the files this package's own `tests/fixtures/` carries: the three
+// answers `cfgread.read_text` gives, the order in which it decides
+// them, the ranks each push takes, and the precedence every push
+// moves.
+//
+// The two shipped suites name paths that are not on this machine, so
+// neither of them can check that a file's bytes become a layer.  The
+// cases here can, because a fixture is a file the repository carries
+// rather than one a machine happens to have.
+//
+// Run with `--isolate` for one verdict per `@test`.
+
+use std.test
+use std.fs
+use std.list
+use std.str
+use std.env
+use cfgread
+use cfgdotenv
+use cfgenviron
+use cfgenvkeys
+use cfgstack
+use cfglayer
+use cfgmerge
+use cfglookup
+use cfgvalue
+use cfgsource
+
+// The fixture whose format is TOML.
+fn toml_fixture() -> Str
+    "tests/fixtures/app.toml"
+
+// The three fixtures, one per format, in the order a list would name
+// them.
+fn three_files() -> [Str]
+    ["tests/fixtures/app.toml", "tests/fixtures/app.json", "tests/fixtures/app.yaml"]
+
+// The rank of the layer at `at`, or `-1` when there is none.
+fn rank_at(s: ConfigStack, at: Int) -> Int
+    let ls = cfgstack.sources(s)
+    if at < list.len(ls)
+        ls[at].rank
+    else
+        0 - 1
+
+// The name of the layer at `at`, or a marker no case accepts.
+fn name_at(s: ConfigStack, at: Int) -> Str
+    let ls = cfgstack.sources(s)
+    if at < list.len(ls)
+        ls[at].name
+    else
+        "<none>"
+
+// The path `first_existing` answers for a list with nothing there, or
+// the marker no case accepts.
+fn first_missing() -> Str [fs]
+    match cfgread.first_existing(["/nonexistent/a.toml", "/nonexistent/b.toml"])
+        Some(p) => p
+        None    => "<none>"
+
+// The merged value of `server.port`, or `-1` when nothing set it.
+fn port_of(s: ConfigStack) -> Int
+    match cfglookup.get_int(cfgstack.build(s), "server.port")
+        Ok(n)  => n
+        Err(_) => 0 - 1
+
+// The layer that set `server.port`, or a marker no case accepts.
+fn port_origin(s: ConfigStack) -> Str
+    match cfgmerge.origin_of(cfgstack.build(s), "server.port")
+        Some(o) => o.layer
+        None    => "<none>"
+
+// Whether a merged tree holds that integer at that path.
+fn int_at(m: MergedConfig, path: Str, want: Int) -> Bool
+    match cfglookup.get_int(m, path)
+        Ok(n)  => n == want
+        Err(_) => false
+
+// Whether a merged tree holds that string at that path.
+fn str_at(m: MergedConfig, path: Str, want: Str) -> Bool
+    match cfglookup.get_str(m, path)
+        Ok(s)  => s == want
+        Err(_) => false
+
+// One file, read and merged, or an empty tree when it will not read —
+// a case that expects the tree to hold something fails either way.
+fn merged_file(path: Str) -> MergedConfig [fs]
+    match cfgread.file_layer(path, 10)
+        Ok(l)  => cfgmerge.merge_all([l])
+        Err(_) => cfgmerge.merge_all([
+                      cfglayer.layer("unread", 10, cfgvalue.empty_table())])
+
+// The pair at `at` of a `.env` file's pairs.
+fn dotenv_pair(path: Str, at: Int) -> (Str, Str) [fs]
+    match cfgdotenv.read_dotenv(path)
+        Ok(ps) =>
+            if at < list.len(ps)
+                ps[at]
+            else
+                ("<short>", "<short>")
+        Err(_) => ("<refused>", "<refused>")
+
+@test
+fn test_read_text_answers_three_ways() [io, fs]
+    test.case("a file that is there gives its bytes")
+    match cfgread.read_text(toml_fixture())
+        Ok(text) => test.assert(str.starts_with(text, "[server]"))
+        Err(e)   => test.fail(e.message())
+
+    test.case("a path that is not there is the ordinary missing answer")
+    match cfgread.read_text("/nonexistent/app.toml")
+        Ok(_)  => test.fail("that path does not exist")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "no such file")
+            test.assert(cfgsource.read_fault_path(e) == "/nonexistent/app.toml")
+
+    test.case("and a path that is not a regular file has no bytes to give")
+    match cfgread.read_text("tests/fixtures/dir.toml")
+        Ok(_)  => test.fail("that path is a directory")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "not text")
+
+@test
+fn test_readable_is_a_file_that_exists_and_not_a_format() [io, fs]
+    test.case("a fixture is readable")
+    test.assert(cfgread.readable(toml_fixture()))
+
+    test.case("a directory is not, whatever its name looks like")
+    test.assert(not cfgread.readable("tests/fixtures/dir.toml"))
+
+    test.case("and a readable file needs no format: the .env fixture has none")
+    test.assert(cfgread.readable("tests/fixtures/.env"))
+
+    test.case("first_existing takes the first one there, not the first named")
+    match cfgread.first_existing(["/nonexistent/a.toml", toml_fixture()])
+        Some(p) => test.assert(p == toml_fixture())
+        None    => test.fail("the second one is there")
+
+    test.case("and a list with nothing there is None, not the last name")
+    test.assert(first_missing() == "<none>")
+
+@test
+fn test_the_extension_is_read_before_the_file_is_opened() [io, fs]
+    // The order is a decision: a path with no extension is refused for
+    // its NAME whichever file it points at, so a program gets the
+    // answer about the name it can fix rather than one about a file
+    // that was never reached.
+    test.case("a path with no format is refused for its name, not for its absence")
+    match cfgread.file_layer("/nonexistent/appconfig", 10)
+        Ok(_)  => test.fail("that path has no format")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "unknown extension")
+
+    test.case("a path with a format and no file is refused for its absence")
+    match cfgread.file_layer("/nonexistent/app.toml", 10)
+        Ok(_)  => test.fail("that path does not exist")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "no such file")
+
+    test.case("and a caller who names the format gets the file's own answer")
+    match cfgread.file_layer_as(FormatToml, "/nonexistent/app.conf", 10)
+        Ok(_)  => test.fail("that path does not exist")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "no such file")
+
+    test.case("the refusal carries the extension it did not know")
+    match cfgread.file_layer("/etc/app.conf", 10)
+        Ok(_)  => test.fail("that path has no format")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "unknown extension")
+            test.assert(cfgsource.read_fault_path(e) == "/etc/app.conf")
+
+@test
+fn test_optional_layer_is_none_only_for_a_path_that_is_not_there() [io, fs]
+    test.case("a path that is not there is None")
+    match cfgread.optional_layer("/nonexistent/app.toml", 10)
+        Ok(none) =>
+            match none
+                Some(_) => test.fail("that path does not exist")
+                None    => test.assert(true)
+        Err(e)   => test.fail(e.message())
+
+    test.case("a path that is there and is a directory still refuses")
+    match cfgread.optional_layer("tests/fixtures/dir.toml", 10)
+        Ok(_)  => test.fail("a directory is not a configuration file")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "not text")
+
+    test.case("and a file that is there answers a layer named by its path")
+    match cfgread.optional_layer(toml_fixture(), 10)
+        Ok(some) =>
+            match some
+                Some(l) =>
+                    test.assert(l.name == toml_fixture())
+                    test.assert(l.rank == 10)
+                None    => test.fail("that file is there")
+        Err(e)   => test.fail(e.message())
+
+@test
+fn test_file_layers_takes_the_files_that_are_there_ranked_in_order() [io, fs]
+    // Consecutive ranks from `first_rank`, so a later file in the list
+    // outranks an earlier one, and a path that is not there takes no
+    // rank at all.
+    let paths = [toml_fixture(), "/nonexistent/x.toml", "tests/fixtures/app.json"]
+    match cfgread.file_layers(paths, 10)
+        Err(e) => test.fail(e.message())
+        Ok(ls) =>
+            test.assert(list.len(ls) == 2)
+            test.assert(ls[0].rank == 10)
+            test.assert(ls[1].rank == 11)
+            test.assert(ls[1].name == "tests/fixtures/app.json")
+
+@test
+fn test_the_three_parsers_answer_a_path_from_a_real_file() [io, fs]
+    test.case("a .toml file")
+    let t = merged_file(toml_fixture())
+    test.assert(int_at(t, "server.port", 8080))
+    test.assert(str_at(t, "server.name", "from toml"))
+
+    test.case("a .json file")
+    let j = merged_file("tests/fixtures/app.json")
+    test.assert(int_at(j, "server.port", 8081))
+    test.assert(str_at(j, "server.name", "from json"))
+
+    test.case("a .yaml file")
+    let y = merged_file("tests/fixtures/app.yaml")
+    test.assert(int_at(y, "server.port", 8081))
+    test.assert(str_at(y, "server.name", "from yaml"))
+
+    test.case("and a caller who names the format gets the same reading")
+    match cfgread.file_layer_as(FormatYaml, "tests/fixtures/app.yaml", 10)
+        Err(e) => test.fail(e.message())
+        Ok(l)  => test.assert(int_at(cfgmerge.merge_all([l]), "server.port", 8081))
+
+@test
+fn test_a_dotenv_file_becomes_pairs_and_then_a_layer() [io, fs]
+    test.case("the pairs are the file's own lines, in order")
+    test.assert(dotenv_pair("tests/fixtures/.env", 0).0 == "APP_SERVER__PORT")
+    test.assert(dotenv_pair("tests/fixtures/.env", 0).1 == "9999")
+
+    test.case("export and a single quote are the grammar the file used")
+    test.assert(dotenv_pair("tests/fixtures/.env", 1).0 == "APP_DEBUG")
+    test.assert(dotenv_pair("tests/fixtures/.env", 1).1 == "quiet")
+
+    test.case("and a double-quoted value with an escaped quote reads as written")
+    test.assert(dotenv_pair("tests/fixtures/.env", 2).0 == "APP_MSG")
+    test.assert(dotenv_pair("tests/fixtures/.env", 2).1 == "a \"quoted\" thing")
+
+    test.case("a layer is named and ranked as the caller asked")
+    match cfgdotenv.optional_dotenv_layer(cfgenvkeys.rule("APP_"),
+                                          "tests/fixtures/.env", "the .env", 20)
+        Ok(some) =>
+            match some
+                Some(l) =>
+                    test.assert(l.name == "the .env")
+                    test.assert(l.rank == 20)
+                None    => test.fail("that file is there")
+        Err(e)   => test.fail(e.message())
+
+    test.case("and a path that is not there is None, not a refusal")
+    match cfgdotenv.optional_dotenv_layer(cfgenvkeys.rule("APP_"),
+                                          "/nonexistent/.env", ".env", 20)
+        Ok(none) =>
+            match none
+                Some(_) => test.fail("that path does not exist")
+                None    => test.assert(true)
+        Err(e)   => test.fail(e.message())
+
+    test.case("while the refusing call refuses")
+    match cfgdotenv.dotenv_layer(cfgenvkeys.rule("APP_"), "/nonexistent/.env", ".env", 20)
+        Ok(_)  => test.fail("that path does not exist")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "no such file")
+
+@test
+fn test_a_dotenv_file_maps_its_names_the_way_the_environment_does() [io, fs]
+    // The property that makes a `.env` worth having: `APP_SERVER__PORT`
+    // in a file and in a shell name the same setting.  The names go
+    // through `cfgenvkeys`, which is the one place the mapping is
+    // written.
+    match cfgdotenv.dotenv_layer(cfgenvkeys.rule("APP_"), "tests/fixtures/.env",
+                                 "tests/fixtures/.env", 20)
+        Err(e) => test.fail(e.message())
+        Ok(l)  =>
+            let m = cfgmerge.merge_all([l])
+            test.assert(int_at(m, "server.port", 9999))
+            test.assert(str_at(m, "debug", "quiet"))
+            test.assert(str_at(m, "msg", "a \"quoted\" thing"))
+
+@test
+fn test_each_push_moves_the_value_one_layer_up() [io, fs]
+    // The whole subject of this package, read out after EVERY push:
+    // later wins, and later is the order of the calls.  A body that
+    // swapped two ranks is caught at the step it swapped them rather
+    // than at the end.
+    let d = cfgstack.with_defaults(cfgstack.empty(), cfgvalue.table([
+        cfgvalue.pair("server", cfgvalue.table([
+            cfgvalue.pair("port", cfgvalue.int_value(80))]))]))
+    test.assert(port_of(d) == 80)
+    test.assert(port_origin(d) == "defaults")
+
+    match cfgstack.with_file(d, toml_fixture())
+        Err(e) => test.fail(e.message())
+        Ok(f)  =>
+            test.assert(port_of(f) == 8080)
+            test.assert(port_origin(f) == toml_fixture())
+            match cfgstack.with_dotenv(f, cfgenvkeys.rule("APP_"), "tests/fixtures/.env")
+                Err(e) => test.fail(e.message())
+                Ok(dv) =>
+                    test.assert(port_of(dv) == 9999)
+                    test.assert(port_origin(dv) == "tests/fixtures/.env")
+                    let ov = cfgstack.with_overrides(dv, [("server.port", "1234")])
+                    test.assert(port_of(ov) == 1234)
+                    test.assert(port_origin(ov) == "--set")
+
+@test
+fn test_a_later_file_in_the_list_outranks_an_earlier_one() [io, fs]
+    // Three files, the same setting in each, pushed by one call: the
+    // last one of the list wins, because that is the rank it took.
+    match cfgstack.with_files(cfgstack.empty(), three_files())
+        Err(e) => test.fail(e.message())
+        Ok(s)  =>
+            test.assert(str_at(cfgstack.build(s), "server.name", "from yaml"))
+            test.assert(int_at(cfgstack.build(s), "server.port", 8081))
+
+@test
+fn test_the_next_rank_always_outranks_everything_pushed() [io, fs]
+    // `with_files` gives a list consecutive ranks, so the counter is
+    // not "the highest plus ten" by arithmetic: it is ten above the
+    // layer that crossed it, which is what a caller relies on — a push
+    // made after any number of pushes outranks every layer already in
+    // the stack.
+    match cfgstack.with_files(cfgstack.empty(), three_files())
+        Err(e) => test.fail(e.message())
+        Ok(f)  =>
+            test.assert(rank_at(f, 0) == 0)
+            test.assert(rank_at(f, 2) == 2)
+            let after = cfgstack.with_defaults(f, cfgvalue.empty_table())
+            test.assert(rank_at(after, 3) == 10)
+            test.assert(rank_at(after, 3) > rank_at(after, 2))
+
+            // A second list of three files takes 20, 21 and 22, and
+            // the layer that lands ON the counter moves it past
+            // itself, so the next push is at 30 rather than 20.
+            match cfgstack.with_files(after, three_files())
+                Err(e) => test.fail(e.message())
+                Ok(g)  =>
+                    test.assert(rank_at(g, 4) == 20)
+                    test.assert(rank_at(g, 6) == 22)
+                    let last = cfgstack.with_layer(g,
+                        cfglayer.layer("last", 0, cfgvalue.empty_table()))
+                    test.assert(rank_at(last, 7) == 30)
+
+@test
+fn test_sources_answers_a_copy_and_the_pushes_keep_their_order() [io]
+    let s = cfgstack.with_defaults(cfgstack.empty(), cfgvalue.empty_table())
+    var ls = cfgstack.sources(s)
+    list.push(ls, cfglayer.layer("added by the reader", 0, cfgvalue.empty_table()))
+    test.assert(cfgstack.depth(s) == 1)
+
+    let s2 = cfgstack.with_layer(s, cfglayer.layer("second", 5, cfgvalue.empty_table()))
+    test.assert(cfgstack.depth(s2) == 2)
+    test.assert(name_at(s2, 0) == "defaults")
+    test.assert(name_at(s2, 1) == "second")
+
+    test.case("and a layer a caller built takes the stack's next rank")
+    test.assert(rank_at(s2, 0) == 0)
+    test.assert(rank_at(s2, 1) == 10)
+
+@test
+fn test_the_standard_stack_is_the_order_the_readme_promises() [io, fs]
+    // defaults at 0, then each file that exists at 10 and up, then the
+    // fixed seats: `.env` at 20, the environment at 30, the overrides
+    // at 40.  The 30 is the number that is a promise rather than
+    // arithmetic: three files push the counter to 22, so a body that
+    // gave the environment the counter's rank would answer 22 here.
+    match cfgstack.standard(cfgvalue.table([
+            cfgvalue.pair("server", cfgvalue.table([
+                cfgvalue.pair("port", cfgvalue.int_value(80))]))]),
+            three_files(), cfgenvkeys.rule("APP_"), [], [("server.port", "1234")])
+        Err(e) => test.fail(e.message())
+        Ok(s)  =>
+            test.assert(name_at(s, 0) == "defaults")
+            test.assert(rank_at(s, 0) == 0)
+            test.assert(rank_at(s, 1) == 10)
+            test.assert(rank_at(s, 3) == 12)
+            test.assert(name_at(s, 4) == "APP_ environment")
+            test.assert(rank_at(s, 4) == 30)
+            test.assert(name_at(s, 5) == "--set")
+            test.assert(rank_at(s, 5) == 40)
+            test.assert(port_of(s) == 1234)
+
+    test.case("and with no overrides the highest file is the winner")
+    match cfgstack.standard(cfgvalue.empty_table(), three_files(),
+                            cfgenvkeys.rule("APP_"), [], [])
+        Err(e) => test.fail(e.message())
+        Ok(s)  => test.assert(str_at(cfgstack.build(s), "server.name", "from yaml"))
+
+@test
+fn test_an_override_path_is_used_as_the_person_spelled_it() [io]
+    test.case("an upper-case segment is a different key, not a lowercased one")
+    let s = cfgstack.with_overrides(cfgstack.empty(), [("Server.Port", "8080")])
+    let m = cfgstack.build(s)
+    test.assert(int_at(m, "Server.Port", 8080))
+    match cfglookup.get_int(m, "server.port")
+        Ok(_)  => test.fail("the path was spelled with a capital S")
+        Err(_) => test.assert(true)
+
+    test.case("a bad path beside a good one is reported, not fatal")
+    test.assert(list.len(cfgstack.bad_overrides([("server.port", "1"), ("a..b", "1")])) == 1)
+    test.assert(list.len(cfgstack.bad_overrides([("server.port", "1")])) == 0)
+
+@test
+fn test_the_environment_reader_is_the_standard_library_in_a_loop() [io]
+    // The environment of the TEST process is the fixture, so the cases
+    // take their names from `env.names()` rather than naming one: what
+    // is asserted is the property (the value is the one `env.get`
+    // answers, the name is spelled as it was asked for, the order is
+    // the caller's), not any particular variable.
+    test.case("no names, no pairs")
+    test.assert(list.len(cfgenviron.pairs_for([])) == 0)
+
+    test.case("a name that is not set contributes nothing")
+    test.assert(list.len(cfgenviron.pairs_for(["APP_NV_DEFINITELY_UNSET"])) == 0)
+
+    let names = env.names()
+    if list.len(names) > 0
+        test.case("a name that is set contributes its value")
+        let n = names[0]
+        let ps = cfgenviron.pairs_for([n])
+        test.assert(list.len(ps) == 1)
+        test.assert(ps[0].0 == n)
+        match env.get(n)
+            Some(v) => test.assert(ps[0].1 == v)
+            None    => test.fail("a name env.names lists should be readable")
+
+        test.case("and the order the caller asked in is the order it answers in")
+        if list.len(names) >= 2
+            let two = cfgenviron.pairs_for([names[1], names[0]])
+            test.assert(list.len(two) == 2)
+            test.assert(two[0].0 == names[1])
+            test.assert(two[1].0 == names[0])
+
+    test.case("a layer from the environment is named and ranked as given")
+    let l = cfgenviron.env_layer(cfgenvkeys.rule("APP_"), [], "APP_ environment", 30)
+    test.assert(l.name == "APP_ environment")
+    test.assert(l.rank == 30)
+
+    test.case("and env_layer_of is the same layer, from candidate names")
+    let lo = cfgenviron.env_layer_of(cfgenvkeys.rule("APP_"),
+                                     ["APP_NV_DEFINITELY_UNSET"],
+                                     "APP_ environment", 30)
+    test.assert(lo.name == "APP_ environment")
+    test.assert(lo.rank == 30)
+
+    test.case("prefixed_pairs keeps the names the prefix matches and skips the rest")
+    test.assert(list.len(cfgenviron.prefixed_pairs(cfgenvkeys.rule("APP_"), ["PATH"])) == 0)
+    if list.len(names) > 0
+        let n = names[0]
+        let ps = cfgenviron.prefixed_pairs(cfgenvkeys.rule(str.slice(n, 0, 1)), [n])
+        test.assert(list.len(ps) == 1)
+        test.assert(ps[0].0 == n)
+
+@test
+fn test_a_file_push_carries_the_file_or_carries_on() [io, fs]
+    test.case("a path that is there becomes a layer")
+    match cfgstack.with_optional_file(cfgstack.empty(), toml_fixture())
+        Ok(s)  =>
+            test.assert(cfgstack.depth(s) == 1)
+            test.assert(name_at(s, 0) == toml_fixture())
+        Err(e) => test.fail(e.message())
+
+    test.case("and one that is not leaves the stack exactly as it was")
+    match cfgstack.with_optional_file(cfgstack.empty(), "/nonexistent/app.toml")
+        Ok(s)  => test.assert(cfgstack.depth(s) == 0)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_a_readable_file_whose_extension_is_unknown_refuses_the_whole_list() [io, fs]
+    // The fixture holds valid TOML and is still refused: the extension
+    // is decided before the bytes are opened, and a list is refused
+    // whole rather than losing the file that would not parse.
+    test.case("with_files refuses rather than skipping it")
+    match cfgstack.with_files(cfgstack.empty(), ["tests/fixtures/app.conf"])
+        Ok(_)  => test.fail("a .conf file names no format this package reads")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "unknown extension")
+
+    test.case("and a good file earlier in the list does not rescue it")
+    match cfgstack.with_files(cfgstack.empty(),
+                              [toml_fixture(), "tests/fixtures/app.conf"])
+        Ok(_)  => test.fail("one unreadable path refuses the list")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "unknown extension")
+            test.assert(cfgsource.read_fault_path(e) == "tests/fixtures/app.conf")
+
+    test.case("standard answers it the same way, being the same call")
+    match cfgstack.standard(cfgvalue.empty_table(), ["tests/fixtures/app.conf"],
+                            cfgenvkeys.rule("APP_"), [], [])
+        Ok(_)  => test.fail("standard cannot skip an unknown format either")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "unknown extension")
+
+@test
+fn test_a_file_that_is_there_and_refuses_its_bytes_is_a_denial() [io, fs]
+    // `read_text`'s third answer, reached for real rather than excused:
+    // a regular file whose mode refuses the read.  No fixture can carry
+    // that mode — a repository does not store one — so the file is made
+    // here, in the temp directory, and mode `0` denies every user but the
+    // superuser, whose CAP_DAC_OVERRIDE makes the read succeed anyway.
+    // The `Ok` arm therefore fails loudly instead of passing falsely; the
+    // CHANGELOG's `### Known` names that a run AS ROOT is red here.
+    let p = fs.temp_file()
+    test.assert(fs.write(p, "APP_PORT=8080\n"))
+    test.assert(fs.set_file_mode(p, 0))
+    match cfgread.read_text(p)
+        Ok(_)  => test.fail("a mode-000 file answered its bytes — this run bypasses the mode (root)")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "denied")
+            test.assert(cfgsource.read_fault_path(e) == p)
+    test.assert(fs.set_file_mode(p, 384))
+    test.assert(fs.delete(p))

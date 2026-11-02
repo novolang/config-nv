@@ -1,0 +1,612 @@
+// text_edges_tests.nv — the text half with no file in it: every escape
+// the grammar names, the borders of a name, the multi-line rule, the
+// render round trip, the three adapters' edges and every arm of the
+// refusal type as it renders.
+//
+// These are the cases the two shipped suites do not carry, and they
+// exist because a body can be wrong in each of these places while
+// every shipped case stays green: each helper below is a one-line
+// reading of a fixture string, so a case is one assertion about one
+// rule.
+//
+// Run with `--isolate` for one verdict per `@test`.
+
+use std.test
+use std.list
+use cfgdotenv
+use cfgadapt
+use cfgsource
+use cfgvalue
+use cfgfault
+use cfglayer
+use cfgmerge
+use cfglookup
+use yamlnode
+
+// The first value a text parses to, or a marker no case accepts.
+fn value_of(text: Str) -> Str
+    match cfgdotenv.parse_dotenv(text, "<fixture>")
+        Ok(ps) =>
+            if list.len(ps) == 0
+                "<none>"
+            else
+                ps[0].1
+        Err(_) => "<refused>"
+
+// The first name a text parses to, or a marker no case accepts.
+fn name_of(text: Str) -> Str
+    match cfgdotenv.parse_dotenv(text, "<fixture>")
+        Ok(ps) =>
+            if list.len(ps) == 0
+                "<none>"
+            else
+                ps[0].0
+        Err(_) => "<refused>"
+
+// The value at `at` in the pairs a text parses to.
+fn nth_value(text: Str, at: Int) -> Str
+    match cfgdotenv.parse_dotenv(text, "<fixture>")
+        Ok(ps) =>
+            if at < list.len(ps)
+                ps[at].1
+            else
+                "<short>"
+        Err(_) => "<refused>"
+
+// How many pairs a text holds, or `-1` when it refuses.
+fn count_of(text: Str) -> Int
+    match cfgdotenv.parse_dotenv(text, "<fixture>")
+        Ok(ps) => list.len(ps)
+        Err(_) => 0 - 1
+
+// The line a `.env` refusal names, or `-1` when the text parses.
+fn refusal_line(text: Str) -> Int
+    match cfgdotenv.parse_dotenv(text, "<fixture>")
+        Ok(_)  => 0 - 1
+        Err(e) => cfgsource.read_fault_line(e)
+
+// A parsed root, wrapped so a case can read a path out of it.
+fn merged(root: ConfigValue) -> MergedConfig
+    cfgmerge.merge_all([cfglayer.layer("fixture", 0, root)])
+
+// The text in a named format, merged, or the empty tree when it
+// refuses — a case that expects a refusal reads the fault instead.
+fn merged_text(f: ConfigFormat, text: Str) -> MergedConfig
+    match cfgadapt.parse_text(f, text, "<fixture>")
+        Ok(root) => merged(root)
+        Err(_)   => merged(cfgvalue.empty_table())
+
+// The kind a text parses to, or a marker no case accepts.
+fn text_kind(f: ConfigFormat, text: Str) -> Str
+    match cfgadapt.parse_text(f, text, "<fixture>")
+        Ok(v)  => cfgvalue.kind_name(cfgvalue.kind_of(v))
+        Err(_) => "<refused>"
+
+// The kind at a path, or a marker no case accepts.
+fn kind_at(m: MergedConfig, path: Str) -> Str
+    match cfglookup.get_value(m, path)
+        Ok(v)  => cfgvalue.kind_name(cfgvalue.kind_of(v))
+        Err(_) => "<none>"
+
+// Whether the path holds that integer.
+fn int_at(m: MergedConfig, path: Str, want: Int) -> Bool
+    match cfglookup.get_int(m, path)
+        Ok(n)  => n == want
+        Err(_) => false
+
+// Whether the path holds that string.
+fn str_at(m: MergedConfig, path: Str, want: Str) -> Bool
+    match cfglookup.get_str(m, path)
+        Ok(s)  => s == want
+        Err(_) => false
+
+// The kind a JSON literal reaches the tree as, read at `a`.
+//
+// A bare scalar is refused as a root — a root that is not a table is
+// `ReadUnusableShape` — so a case about a value's SHAPE has to put it
+// under a key, which is also where a program would find it.
+fn wrapped_kind(literal: Str) -> Str
+    kind_at(merged_text(FormatJson, "{\"a\": ${literal}}"), "a")
+
+@test
+fn test_the_six_escapes_are_the_six_the_header_names() [io]
+    test.case("a backslash n is a newline")
+    test.assert(value_of("A=\"a\\nb\"\n") == "a\nb")
+
+    test.case("a backslash r is a carriage return")
+    test.assert(value_of("A=\"a\\rb\"\n") == "a\rb")
+
+    test.case("a backslash t is a tab")
+    test.assert(value_of("A=\"a\\tb\"\n") == "a\tb")
+
+    test.case("a doubled backslash is one backslash")
+    test.assert(value_of("A=\"a\\\\b\"\n") == "a\\b")
+
+    test.case("an escaped quote is a quote")
+    test.assert(value_of("A=\"a\\\"b\"\n") == "a\"b")
+
+    test.case("an escaped dollar is a dollar")
+    test.assert(value_of("A=\"a\\\$b\"\n") == "a\$b")
+
+@test
+fn test_an_escape_the_grammar_does_not_name_keeps_both_its_bytes() [io]
+    test.case("a backslash q is a backslash and a q")
+    test.assert(value_of("A=\"a\\qb\"\n") == "a\\qb")
+
+    test.case("and a Windows path survives as written")
+    test.assert(value_of("A=\"C:\\\\tmp\"\n") == "C:\\tmp")
+
+@test
+fn test_a_single_quoted_body_is_the_text_as_written() [io]
+    test.case("a backslash n is a backslash and an n")
+    test.assert(value_of("A='a\\nb'\n") == "a\\nb")
+
+    test.case("and a doubled backslash is two backslashes")
+    test.assert(value_of("A='a\\\\b'\n") == "a\\\\b")
+
+@test
+fn test_a_name_is_an_identifier_and_a_line_needs_an_equals_sign() [io]
+    test.case("a name may start with an underscore")
+    test.assert(name_of("_A=1\n") == "_A")
+
+    test.case("and may hold digits after the first byte")
+    test.assert(name_of("A_1=2\n") == "A_1")
+
+    test.case("a digit may not start a name")
+    test.assert(name_of("1A=2\n") == "<refused>")
+
+    test.case("nor a hyphen appear in one")
+    test.assert(name_of("A-B=1\n") == "<refused>")
+
+    test.case("a line with no equals sign is refused")
+    test.assert(name_of("APP_DEBUG\n") == "<refused>")
+
+    test.case("a quoted name is refused")
+    test.assert(name_of("'A'=1\n") == "<refused>")
+
+@test
+fn test_export_is_stripped_only_when_a_blank_follows_it() [io]
+    test.case("export with a blank is not part of the name")
+    test.assert(name_of("export A=1\n") == "A")
+
+    test.case("but exportAPP is a name of its own")
+    test.assert(name_of("exportAPP=1\n") == "exportAPP")
+
+    test.case("and export=1 binds the name export")
+    test.assert(name_of("export=1\n") == "export")
+
+    test.case("export with nothing after it has no equals sign")
+    test.assert(name_of("export\n") == "<refused>")
+
+    test.case("blanks around the equals sign are ignored")
+    test.assert(value_of("A = 1\n") == "1")
+    test.assert(value_of("A=  1  \n") == "1")
+
+    test.case("and so is a blank before a quote")
+    test.assert(value_of("A= 'v'\n") == "v")
+
+@test
+fn test_a_value_ends_at_a_hash_outside_quotes() [io]
+    test.case("a comment after a blank")
+    test.assert(value_of("A=1 # c\n") == "1")
+
+    test.case("a comment with no blank before it")
+    test.assert(value_of("A=1#c\n") == "1")
+
+    test.case("a value that is nothing but a comment is empty")
+    test.assert(value_of("A=#c\n") == "")
+
+    test.case("a quote hides the hash from the comment rule")
+    test.assert(value_of("A=\"1#2\"\n") == "1#2")
+
+    test.case("a comment after a quoted value is allowed")
+    test.assert(value_of("A='v' # c\n") == "v")
+
+    test.case("and text after the closing quote is not")
+    test.assert(value_of("A='v' junk\n") == "<refused>")
+    test.assert(value_of("A=\"v\"junk\n") == "<refused>")
+
+@test
+fn test_a_quoted_value_may_span_lines() [io]
+    test.case("a double-quoted body keeps the newline it spans")
+    test.assert(value_of("A=\"one\ntwo\"\n") == "one\ntwo")
+
+    test.case("and a single-quoted one does too")
+    test.assert(value_of("A='one\ntwo'\n") == "one\ntwo")
+
+    test.case("the pair is one pair, whatever the body spans")
+    test.assert(count_of("A=\"one\ntwo\"\n") == 1)
+
+    test.case("the line a later fault names is its logical line's own")
+    test.assert(refusal_line("A=\"one\ntwo\"\nbad line\n") == 3)
+
+    test.case("a comment may hold an unbalanced quote and open nothing")
+    test.assert(count_of("# don't\nA=1\n") == 1)
+
+    test.case("and a quote never closed is refused at its own line")
+    test.assert(refusal_line("A=\"unterminated\n") == 1)
+    test.assert(refusal_line("ok=1\nA='unterminated\n") == 2)
+
+@test
+fn test_the_parser_keeps_a_repeated_name_twice() [io]
+    // `parse_dotenv` keeps the file's pairs in file order, both of
+    // them.  Last one wins is `cfgenvkeys.layer_from`'s rule, one
+    // layer up, and the layer's answer is what the shipped suite
+    // pins.
+    test.case("two lines, two pairs")
+    test.assert(count_of("A=1\nA=2\n") == 2)
+
+    test.case("in the order the file wrote them")
+    test.assert(nth_value("A=1\nA=2\n", 0) == "1")
+    test.assert(nth_value("A=1\nA=2\n", 1) == "2")
+
+@test
+fn test_the_text_borders_a_later_case_relies_on() [io]
+    test.case("an empty text is no pairs at all")
+    test.assert(count_of("") == 0)
+
+    test.case("a comment is not a pair")
+    test.assert(count_of("# only a comment\n") == 0)
+
+    test.case("and a file whose last line has no newline still parses")
+    test.assert(count_of("A=1") == 1)
+
+    test.case("a trailing newline is not an empty pair")
+    test.assert(count_of("A=1\n") == 1)
+
+    test.case("and a blank line is not a pair")
+    test.assert(count_of("A=1\n\nB=2\n") == 2)
+
+@test
+fn test_render_writes_the_bare_forms_without_quotes() [io]
+    // The two spellings below are what pins the quote SET rather than
+    // the round trip: `A=a$b` and `A=` both round-trip through the
+    // quoted form as well, so only the exact text says which one this
+    // package writes.
+    test.case("a dollar sign is not quoted, because nothing interpolates")
+    test.assert(cfgdotenv.render_dotenv([("A", "a\$b")]) == "A=a\$b\n")
+
+    test.case("and the empty value is written as an empty value")
+    test.assert(cfgdotenv.render_dotenv([("A", "")]) == "A=\n")
+
+    test.case("no pairs, no text")
+    test.assert(cfgdotenv.render_dotenv([]) == "")
+
+    test.case("and a plain value is written as it stands")
+    test.assert(cfgdotenv.render_dotenv([("A", "1")]) == "A=1\n")
+
+@test
+fn test_render_round_trips_every_value_that_needs_quoting() [io]
+    let awkward = ["", "a b", "a\tb", "a\nb", "a\rb", "#c", "'q'",
+                   "\"dq\"", "a\\b", "a\$b", "  spaced  ", "C:\\tmp",
+                   "a\$ b", "\$lead"]
+    for v in awkward
+        test.assert(value_of(cfgdotenv.render_dotenv([("A", v)])) == v)
+
+    test.case("two pairs keep their order")
+    let two = cfgdotenv.render_dotenv([("A", "1"), ("B", "2")])
+    test.assert(count_of(two) == 2)
+    test.assert(nth_value(two, 1) == "2")
+
+@test
+fn test_the_extension_rule_has_its_borders() [io]
+    test.case("a dotfile is a name, not a suffix")
+    test.assert(cfgadapt.extension_of(".env") == "")
+
+    test.case("a name with no dot has no extension")
+    test.assert(cfgadapt.extension_of("/etc/appconfig") == "")
+
+    test.case("a trailing dot names an empty extension")
+    test.assert(cfgadapt.extension_of("app.") == "")
+
+    test.case("the last dot wins")
+    test.assert(cfgadapt.extension_of("app.tar.toml") == "toml")
+
+    test.case("and only the final segment is read")
+    test.assert(cfgadapt.extension_of("v1.2/app") == "")
+
+    test.case("the case does not matter, because Config.TOML is the same file")
+    test.assert(cfgadapt.extension_of("Config.TOML") == "toml")
+
+    test.case("yml and yaml are one format")
+    match cfgadapt.format_of("/etc/app.yml")
+        Some(f) => test.assert(cfgadapt.format_name(f) == "yaml")
+        None    => test.fail(".yml is a format")
+
+@test
+fn test_each_format_names_itself_with_the_token_the_extension_rule_reads() [io]
+    // `format_name`'s three arms, and the property that ties each name
+    // to the dispatch: the name a format answers is what an extension
+    // spells for it.  The shipped suite reaches these arms only in the
+    // cases after its one red case, so a one-process coverage run never
+    // sees them; this suite is green whole.
+    test.case("toml")
+    test.assert(cfgadapt.format_name(FormatToml) == "toml")
+    match cfgadapt.format_of("/etc/app.toml")
+        Some(f) => test.assert(cfgadapt.format_name(f) == "toml")
+        None    => test.fail(".toml is a format")
+
+    test.case("yaml")
+    test.assert(cfgadapt.format_name(FormatYaml) == "yaml")
+    match cfgadapt.format_of("/etc/app.yaml")
+        Some(f) => test.assert(cfgadapt.format_name(f) == "yaml")
+        None    => test.fail(".yaml is a format")
+
+    test.case("json")
+    test.assert(cfgadapt.format_name(FormatJson) == "json")
+    match cfgadapt.format_of("/etc/app.json")
+        Some(f) => test.assert(cfgadapt.format_name(f) == "json")
+        None    => test.fail(".json is a format")
+
+@test
+fn test_a_number_is_settled_by_its_own_spelling() [io]
+    test.case("a whole literal is an integer")
+    test.assert(wrapped_kind("8080") == "int")
+
+    test.case("the most positive 64-bit literal is one too")
+    test.assert(wrapped_kind("9223372036854775807") == "int")
+
+    test.case("1.0 is a float, however whole it looks")
+    test.assert(wrapped_kind("1.0") == "float")
+
+    test.case("1.5 is a float")
+    test.assert(wrapped_kind("1.5") == "float")
+
+    test.case("1e20 is a float, an exponent being a fraction's business")
+    test.assert(wrapped_kind("1e20") == "float")
+
+    test.case("a JSON string of digits is a string")
+    test.assert(wrapped_kind("\"8080\"") == "str")
+
+@test
+fn test_the_json_shapes_are_discovered_and_null_is_a_value() [io]
+    test.case("an empty object is a table, not a null")
+    test.assert(text_kind(FormatJson, "{}") == "table")
+
+    test.case("null is a value and reaches the tree as one")
+    let m = merged_text(FormatJson, "{\"a\": null}")
+    test.assert(kind_at(m, "a") == "null")
+
+    test.case("a boolean is a boolean")
+    test.assert(kind_at(merged_text(FormatJson, "{\"a\": true}"), "a") == "bool")
+
+    test.case("a nested object and array keep their shapes")
+    let m2 = merged_text(FormatJson, "{\"a\": {\"b\": [1, 2]}}")
+    test.assert(kind_at(m2, "a.b") == "list")
+    test.assert(kind_at(m2, "a.b.1") == "int")
+
+    test.case("an array of mixed shapes keeps each one")
+    let m3 = merged_text(FormatJson, "{\"a\": [1, 1.5, true, null, \"x\"]}")
+    test.assert(kind_at(m3, "a.0") == "int")
+    test.assert(kind_at(m3, "a.1") == "float")
+    test.assert(kind_at(m3, "a.2") == "bool")
+    test.assert(kind_at(m3, "a.3") == "null")
+    test.assert(kind_at(m3, "a.4") == "str")
+
+@test
+fn test_a_root_that_is_not_a_table_is_a_shape_refusal() [io]
+    test.case("a JSON scalar names no key a path could reach")
+    match cfgadapt.parse_text(FormatJson, "8080", "<fixture>")
+        Ok(_)  => test.fail("a scalar names no key")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "unusable shape")
+            test.assert(cfgsource.read_fault_path(e) == "<fixture>")
+
+    test.case("and a YAML sequence has none either")
+    match cfgadapt.parse_text(FormatYaml, "- 1\n- 2\n", "<fixture>")
+        Ok(_)  => test.fail("a sequence names no key")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "unusable shape")
+
+    test.case("a JSON array too")
+    match cfgadapt.parse_text(FormatJson, "[1]", "<fixture>")
+        Ok(_)  => test.fail("an array names no key")
+        Err(e) => test.assert(cfgsource.read_fault_kind(e) == "unusable shape")
+
+@test
+fn test_a_toml_date_time_reaches_the_tree_as_its_rfc_3339_spelling() [io]
+    test.case("an offset date-time")
+    test.assert(str_at(merged_text(FormatToml, "d = 1979-05-27T07:32:00Z\n"),
+                       "d", "1979-05-27T07:32:00Z"))
+
+    test.case("a local date")
+    test.assert(str_at(merged_text(FormatToml, "d = 1979-05-27\n"), "d", "1979-05-27"))
+
+    test.case("a local time")
+    test.assert(str_at(merged_text(FormatToml, "d = 07:32:00\n"), "d", "07:32:00"))
+
+    test.case("and it is a string, not an instant")
+    match cfglookup.get_int(merged_text(FormatToml, "d = 07:32:00\n"), "d")
+        Ok(_)  => test.fail("a clock reading is not an integer")
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_yaml_key_that_is_a_scalar_keeps_the_documents_spelling() [io]
+    test.case("1: becomes the key \"1\"")
+    test.assert(str_at(merged_text(FormatYaml, "1: a\n"), "1", "a"))
+
+    test.case("and true: becomes the key \"true\"")
+    test.assert(str_at(merged_text(FormatYaml, "true: a\n"), "true", "a"))
+
+    test.case("a nested mapping keeps its depth")
+    let m = merged_text(FormatYaml, "server:\n  port: 8080\n  flags:\n    - a\n")
+    test.assert(int_at(m, "server.port", 8080))
+    test.assert(str_at(m, "server.flags.0", "a"))
+
+@test
+fn test_the_json_parse_failure_carries_no_position() [io]
+    test.case("because std.json reports none, and -1 is the spelling of that")
+    match cfgadapt.parse_text(FormatJson, "{", "<fixture>")
+        Ok(_)  => test.fail("that is not JSON")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "parse failed")
+            test.assert(cfgsource.read_fault_line(e) == 0 - 1)
+            test.assert(cfgsource.read_fault_path(e) == "<fixture>")
+
+    test.case("while the parsers that report one carry it")
+    match cfgadapt.parse_text(FormatToml, "x = = 1\n", "f.toml")
+        Ok(_)  => test.fail("that is not TOML")
+        Err(e) => test.assert(cfgsource.read_fault_line(e) == 1)
+
+@test
+fn test_every_arm_of_the_refusal_type_renders_and_answers() [io]
+    test.case("each arm as a message")
+    test.assert(ReadNoSuchFile("/etc/app.toml").message() ==
+                "no such file: /etc/app.toml")
+    test.assert(ReadDenied("/etc/shadow").message() == "denied: /etc/shadow")
+    test.assert(ReadNotText("/etc").message() == "not text: /etc")
+    test.assert(ReadUnknownExtension("a.conf", "conf").message() ==
+                "unknown extension .conf: a.conf")
+    test.assert(ReadParseFailed("a.toml", 3, 5, "why").message() ==
+                "a.toml:3:5: why")
+    test.assert(ReadBadEnvLine(".env", 2, "why").message() ==
+                ".env:2: bad .env line: why")
+    test.assert(ReadUnusableShape("a.yaml", "why").message() ==
+                "unusable shape: a.yaml: why")
+    let inner = CfgMissing("server.port")
+    test.assert(ReadValueFault(CfgMissing("server.port")).message() ==
+                inner.message())
+
+    test.case("each arm as a kind")
+    test.assert(cfgsource.read_fault_kind(ReadNoSuchFile("p")) == "no such file")
+    test.assert(cfgsource.read_fault_kind(ReadDenied("p")) == "denied")
+    test.assert(cfgsource.read_fault_kind(ReadNotText("p")) == "not text")
+    test.assert(cfgsource.read_fault_kind(ReadUnknownExtension("p", "c")) ==
+                "unknown extension")
+    test.assert(cfgsource.read_fault_kind(ReadParseFailed("p", 1, 1, "w")) ==
+                "parse failed")
+    test.assert(cfgsource.read_fault_kind(ReadBadEnvLine("p", 1, "w")) ==
+                "bad env line")
+    test.assert(cfgsource.read_fault_kind(ReadUnusableShape("p", "w")) ==
+                "unusable shape")
+    test.assert(cfgsource.read_fault_kind(ReadValueFault(CfgMissing("p"))) ==
+                "value")
+
+    test.case("the path each arm is about")
+    test.assert(cfgsource.read_fault_path(ReadValueFault(CfgMissing("p"))) == "")
+    test.assert(cfgsource.read_fault_path(ReadNoSuchFile("p")) == "p")
+    test.assert(cfgsource.read_fault_path(ReadDenied("p")) == "p")
+    test.assert(cfgsource.read_fault_path(ReadParseFailed("p", 1, 1, "w")) == "p")
+    test.assert(cfgsource.read_fault_path(ReadNotText("p")) == "p")
+    test.assert(cfgsource.read_fault_path(ReadUnknownExtension("p", "c")) == "p")
+    test.assert(cfgsource.read_fault_path(ReadBadEnvLine("p", 1, "w")) == "p")
+    test.assert(cfgsource.read_fault_path(ReadUnusableShape("p", "w")) == "p")
+
+    test.case("a line only where a reader had one")
+    test.assert(cfgsource.read_fault_line(ReadBadEnvLine("p", 7, "w")) == 7)
+    test.assert(cfgsource.read_fault_line(ReadParseFailed("p", 4, 1, "w")) == 4)
+    test.assert(cfgsource.read_fault_line(ReadDenied("p")) == 0 - 1)
+    test.assert(cfgsource.read_fault_line(ReadUnusableShape("p", "w")) == 0 - 1)
+
+    test.case("only a missing file is absent")
+    test.assert(cfgsource.is_absent(ReadNoSuchFile("p")))
+    test.assert(not cfgsource.is_absent(ReadUnknownExtension("p", "c")))
+    test.assert(not cfgsource.is_absent(ReadDenied("p")))
+    test.assert(not cfgsource.is_absent(ReadValueFault(CfgMissing("p"))))
+
+    test.case("and only one arm carries a config-core-nv refusal")
+    match cfgsource.value_fault(ReadValueFault(CfgMissing("p")))
+        Some(v) => test.assert(cfgfault.fault_kind(v) == "missing")
+        None    => test.fail("that arm carries one")
+    match cfgsource.value_fault(ReadDenied("p"))
+        Some(_) => test.fail("that fault is about bytes")
+        None    => test.assert(true)
+
+// A one-pair YAML mapping, for the collection-key cases below.  The
+// tree they need cannot come out of `yamlread` — the parser refuses a
+// key that is a collection before the adapter ever sees it — so the
+// cases build the tree themselves, which is also the caller the
+// adapter's own refusal exists for.
+fn yaml_map(key: YamlValue, value: YamlValue) -> YamlValue
+    YamlMap([YamlPair { key: key, value: value }])
+
+@test
+fn test_a_toml_array_a_float_a_bool_and_a_local_date_time_all_reach_the_tree() [io]
+    // The TOML arms no shipped case carries: an adapter that dropped
+    // any one of these would keep every shipped case green.
+    let m = merged_text(FormatToml,
+        "xs = [1, 2]\nratio = 1.5\nflag = true\nat = 1979-05-27T07:32:00\n")
+    test.case("an array is a list, and its items keep their own shapes")
+    test.assert(kind_at(m, "xs") == "list")
+    test.assert(int_at(m, "xs.0", 1))
+    test.assert(int_at(m, "xs.1", 2))
+
+    test.case("a float is a float")
+    test.assert(kind_at(m, "ratio") == "float")
+
+    test.case("a bool is a bool")
+    test.assert(kind_at(m, "flag") == "bool")
+
+    test.case("and a local date-time is the text it was written as")
+    test.assert(str_at(m, "at", "1979-05-27T07:32:00"))
+
+@test
+fn test_a_yaml_float_and_a_yaml_null_reach_the_tree() [io]
+    let m = merged_text(FormatYaml, "ratio: 1.5\nnothing: ~\n")
+    test.assert(kind_at(m, "ratio") == "float")
+    test.assert(kind_at(m, "nothing") == "null")
+
+@test
+fn test_a_yaml_syntax_error_is_the_parsers_own_refusal() [io]
+    // The untranslated arm of `yaml_fault`: a refusal that is NOT a
+    // collection key keeps yaml-nv's own words and its own position.
+    // The shipped suite pins only the translated arm.
+    match cfgadapt.parse_text(FormatYaml, "a: [1, 2\n", "f.yaml")
+        Ok(_)  => test.fail("that is not YAML")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "parse failed")
+            test.assert(cfgsource.read_fault_path(e) == "f.yaml")
+            test.assert(cfgsource.read_fault_line(e) > 0)
+
+@test
+fn test_a_yaml_key_that_is_a_collection_is_the_adapters_refusal_too() [io]
+    // `parse_text` meets this shape as a parser refusal, which the
+    // shipped suite pins; the translation is HERE, because the shipped
+    // case sits after that suite's one red case and a one-process
+    // coverage run stops before it.  `from_yaml` meets the shape the
+    // tree itself holds, which is the other arm — and the only caller
+    // of the refusal it raises.
+    test.case("through parse_text, yaml-nv's ComplexKey arrives translated")
+    match cfgadapt.parse_text(FormatYaml, "? [a, b]\n: 1\n", "<fixture>")
+        Ok(_)  => test.fail("a sequence key has no path")
+        Err(e) =>
+            test.assert(cfgsource.read_fault_kind(e) == "unusable shape")
+            test.assert(cfgsource.read_fault_path(e) == "<fixture>")
+            test.assert(cfgsource.read_fault_line(e) == 0 - 1)
+            test.assert(e.message() ==
+                        "unusable shape: <fixture>: a mapping key that is a collection at line 1 column 1")
+
+    test.case("a sequence used as a key")
+    match cfgadapt.from_yaml(yaml_map(YamlSeq([YamlInt(1)]), YamlInt(2)))
+        Ok(_)  => test.fail("a sequence names no key")
+        Err(f) =>
+            test.assert(cfgsource.read_fault_kind(f) == "unusable shape")
+            test.assert(cfgsource.read_fault_path(f) == "")
+            test.assert(f.message() ==
+                        "unusable shape: : a seq was used as a mapping key")
+
+    test.case("and a mapping used as one, a level down")
+    let inner = yaml_map(YamlSeq([YamlInt(1)]), YamlInt(2))
+    match cfgadapt.from_yaml(yaml_map(inner, YamlInt(3)))
+        Ok(_)  => test.fail("a mapping names no key either")
+        Err(f) =>
+            test.assert(cfgsource.read_fault_kind(f) == "unusable shape")
+            test.assert(f.message() ==
+                        "unusable shape: : a map was used as a mapping key")
+
+@test
+fn test_the_dotenv_grammar_refuses_every_broken_shape_it_names() [io]
+    test.case("a double quote that is never closed")
+    test.assert(count_of("A=\"unterminated\n") == 0 - 1)
+    test.assert(refusal_line("A=\"unterminated\n") == 1)
+
+    test.case("and a single one neither")
+    test.assert(count_of("A='unterminated\n") == 0 - 1)
+    test.assert(refusal_line("A='unterminated\n") == 1)
+
+    test.case("leading blanks are skipped, so an indented pair is a pair")
+    test.assert(name_of("  A=1\n") == "A")
+    test.assert(value_of("  A=1\n") == "1")
+
+    test.case("and a line that is only the keyword binds nothing and refuses")
+    test.assert(count_of("export \n") == 0 - 1)
+    test.assert(refusal_line("export \n") == 1)

@@ -1,0 +1,6 @@
+{
+  "server": {"port": 8081, "name": "from json"},
+  "flags": [1, 2.5, true, null, "x"],
+  "count": 9223372036854775807,
+  "whole": 1.0
+}
