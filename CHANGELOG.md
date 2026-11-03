@@ -253,6 +253,12 @@ each confirmed in the build log rather than assumed.
   standard library's writer, and a package cannot tell an infinity from
   a zero after `stringify` has answered.
 
+This release requires novo 0.23.0 or later.
+
+## 0.0.4 — 2026-10-25
+
+A file that names a sibling module's type, function or constant now has the `use` line for that module (E2033, E2003).  No signature and no behaviour changed.
+
 ## 0.0.3 — 2026-09-28
 
 The dependency ranges move to the dependencies' current releases.  A
